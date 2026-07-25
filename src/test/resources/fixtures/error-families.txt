@@ -1,0 +1,5 @@
+# Synthetic fixture. Contains no player identity, UUID, coordinate or original NBT.
+appeng.api.stacks.AEKey|Failed to deserialize AE key: {}|Unknown registry key in ResourceKey[minecraft:root / minecraft:item]: kaleidoscope_tavern:sunset_glow
+appeng.util.AECodecs|Failed to deserialize ItemStack: {}|Unknown registry key in ResourceKey[minecraft:root / minecraft:item]: integrateddynamics:crystalized_menril_chunk
+net.minecraft.world.item.ItemStack|Tried to load invalid item: '{}'|Unknown registry key in ResourceKey[minecraft:root / minecraft:item]: evolvedmekanism:end_stone_lead_ore
+net.neoforged.neoforge.attachment.AttachmentHolder|Encountered unknown or non-serializable data attachment {}. Skipping.|removedmod:player_state

@@ -1,0 +1,28 @@
+# Gradle and generated artifacts
+.gradle/
+build/
+out/
+
+# Local Minecraft runs and diagnostics
+run/
+*.log
+*.jfr
+crash-reports/
+
+# IDE and operating-system files
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Operator-specific evidence must never be committed
+docs/evidence/
+docs/internal/
+
+# Local signing and environment files
+.env
+.env.*
+*.keystore
+*.p12
+*.pem

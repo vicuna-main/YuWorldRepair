@@ -1,0 +1,29 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+
+[[mods]]
+modId = "yuworldrepair"
+version = "2.1.0-rc1+mc1.21.1-neoforge"
+displayName = "YuWorldRepair Server Maintenance Edition"
+authors = "YuWorldRepair contributors"
+displayTest = "IGNORE_ALL_VERSION"
+description = '''Server-side verified world repair with registry snapshots, save/stop handoff,
+post-shutdown copy-on-write replacement, verification, automatic rollback, and startup gating.'''
+
+[[dependencies.yuworldrepair]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.241,21.2)"
+ordering = "NONE"
+side = "SERVER"
+
+[[dependencies.yuworldrepair]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1]"
+ordering = "NONE"
+side = "SERVER"
+
+[features.yuworldrepair]
+javaVersion = "[21,)"

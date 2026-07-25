@@ -1,0 +1,494 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = 'YuWorldRepair'
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+
+sourceSets {
+    worldTool
+    worldToolTest
+    maintenance {
+        compileClasspath += project.files(
+                sourceSets.main.output,
+                sourceSets.worldTool.output,
+                sourceSets.main.compileClasspath
+        )
+        runtimeClasspath += project.files(
+                output,
+                sourceSets.main.output,
+                sourceSets.worldTool.output,
+                sourceSets.main.runtimeClasspath
+        )
+    }
+    maintenanceTest {
+        compileClasspath += project.files(
+                sourceSets.maintenance.output,
+                sourceSets.worldTool.output,
+                sourceSets.maintenance.compileClasspath
+        )
+        runtimeClasspath += project.files(
+                output,
+                sourceSets.maintenance.output,
+                sourceSets.worldTool.output,
+                sourceSets.maintenance.runtimeClasspath
+        )
+    }
+}
+
+neoForge {
+    version = neo_version
+
+    runs {
+        client {
+            client()
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+        gameTestServer {
+            type = 'gameTestServer'
+        }
+    }
+
+    mods {
+        yuworldrepair {
+            sourceSet sourceSets.main
+        }
+    }
+
+    unitTest {
+        enable()
+        testedMod = mods.yuworldrepair
+    }
+}
+
+dependencies {
+    compileOnly 'org.appliedenergistics:appliedenergistics2:19.2.17:api'
+    worldToolImplementation 'com.google.code.gson:gson:2.10.1'
+    maintenanceImplementation sourceSets.worldTool.output
+    maintenanceImplementation 'com.google.code.gson:gson:2.10.1'
+    maintenanceTestImplementation platform('org.junit:junit-bom:5.11.4')
+    maintenanceTestImplementation 'org.junit.jupiter:junit-jupiter'
+    maintenanceTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    worldToolTestImplementation sourceSets.worldTool.output
+    worldToolTestImplementation 'com.google.code.gson:gson:2.10.1'
+    worldToolTestImplementation platform('org.junit:junit-bom:5.11.4')
+    worldToolTestImplementation 'org.junit.jupiter:junit-jupiter'
+    worldToolTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+dependencyLocking {
+    lockAllConfigurations()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.compilerArgs.addAll(['-Xlint:all', '-Xlint:-processing'])
+}
+
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    // ModDev's Minecraft test bootstrap shares build/minecraft-junit/config. Parallel forks can
+    // observe NightConfig files while another fork is replacing them, so the game bootstrap must
+    // be serialized. Concurrency in the guard itself is covered by dedicated multi-threaded tests.
+    maxParallelForks = 1
+    jvmArgs '-Xms128m', '-Xmx512m'
+}
+
+tasks.register('worldToolTest', Test) {
+    group = 'verification'
+    description = 'Runs standalone offline world-tool tests without Minecraft bootstrap.'
+    testClassesDirs = sourceSets.worldToolTest.output.classesDirs
+    classpath = sourceSets.worldToolTest.runtimeClasspath
+    useJUnitPlatform()
+    maxParallelForks = 1
+    jvmArgs '-Xms64m', '-Xmx512m'
+}
+
+tasks.register('maintenanceTest', Test) {
+    group = 'verification'
+    description = 'Runs pure-Java maintenance handoff and startup-gate tests.'
+    testClassesDirs = sourceSets.maintenanceTest.output.classesDirs
+    classpath = sourceSets.maintenanceTest.runtimeClasspath
+    useJUnitPlatform()
+    maxParallelForks = 1
+    jvmArgs '-Xms64m', '-Xmx512m'
+}
+
+processResources {
+    def props = [
+            minecraft_version: minecraft_version,
+            neo_version      : neo_version,
+            mod_id           : mod_id,
+            mod_name         : mod_name,
+            mod_license      : mod_license,
+            mod_version      : mod_version,
+            mod_authors      : mod_authors,
+            mod_description  : mod_description
+    ]
+    inputs.properties props
+    filesMatching(['META-INF/neoforge.mods.toml', 'build-info.properties']) {
+        expand props
+    }
+}
+
+jar {
+    // The 1.0.0 artifact is deliberately incapable of mutating game data. Reversible migration
+    // work remains in the repository for a separately versioned experimental build.
+    exclude 'dev/yu/worldrepair/migration/**'
+    exclude 'dev/yu/worldrepair/integration/ae2/Ae2MigrationBridgeFactory*'
+    exclude 'dev/yu/worldrepair/integration/ae2/internal/**'
+    exclude 'dev/yu/worldrepair/worldtool/**'
+    manifest {
+        attributes(
+                'Implementation-Title': mod_name,
+                'Implementation-Version': mod_version,
+                'Built-Jdk': System.getProperty('java.version')
+        )
+    }
+}
+
+tasks.named('sourcesJar') {
+    exclude 'dev/yu/worldrepair/migration/**'
+    exclude 'dev/yu/worldrepair/integration/ae2/Ae2MigrationBridgeFactory*'
+    exclude 'dev/yu/worldrepair/integration/ae2/internal/**'
+    exclude 'dev/yu/worldrepair/worldtool/**'
+}
+
+tasks.register('worldToolJar', Jar) {
+    group = 'build'
+    description = 'Builds the standalone experimental offline world repair tool.'
+    archiveBaseName = 'YuWorldRepair-world-tool'
+    archiveVersion = '1.1.0-experimental+mc1.21.1'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from sourceSets.worldTool.output
+    from {
+        configurations.worldToolRuntimeClasspath
+                .findAll { it.isFile() }
+                .collect { zipTree(it) }
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    exclude 'dev/yu/worldrepair/worldtool/maintenance/**'
+    manifest {
+        attributes(
+                'Main-Class': 'dev.yu.worldrepair.worldtool.WorldToolMain',
+                'Implementation-Title': 'YuWorldRepair Offline World Tool',
+                'Implementation-Version': '1.1.0-experimental+mc1.21.1',
+                'Data-Mutation': 'offline-world-copy-only'
+        )
+    }
+}
+
+tasks.register('worldToolSourcesJar', Jar) {
+    group = 'build'
+    description = 'Builds sources for the standalone experimental world repair tool.'
+    archiveBaseName = 'YuWorldRepair-world-tool'
+    archiveVersion = '1.1.0-experimental+mc1.21.1'
+    archiveClassifier = 'sources'
+    from sourceSets.worldTool.allSource
+    exclude 'dev/yu/worldrepair/worldtool/maintenance/**'
+}
+
+tasks.register('maintenanceWorkerJar', Jar) {
+    group = 'build'
+    description = 'Builds the isolated post-shutdown worker embedded by the maintenance Mod.'
+    archiveFileName = 'yuworldrepair-maintenance-worker.jar'
+    destinationDirectory = layout.buildDirectory.dir('generated/maintenance-worker')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.worldTool.output) {
+        exclude 'dev/yu/worldrepair/worldtool/WorldToolMain*'
+    }
+    from {
+        configurations.worldToolRuntimeClasspath
+                .findAll { it.isFile() }
+                .collect { zipTree(it) }
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    manifest {
+        attributes(
+                'Main-Class':
+                        'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain',
+                'Implementation-Title': 'YuWorldRepair Post-Shutdown Worker',
+                'Implementation-Version': '2.1.0-rc1+mc1.21.1',
+                'Data-Mutation': 'exact-authorized-unlocked-world-only'
+        )
+    }
+}
+
+tasks.register('maintenanceJar', Jar) {
+    group = 'build'
+    description = 'Builds the server Mod edition with post-shutdown repair and rollback worker.'
+    archiveBaseName = 'YuWorldRepair'
+    archiveVersion = '2.1.0-rc1+mc1.21.1-neoforge'
+    dependsOn tasks.named('maintenanceWorkerJar')
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from(sourceSets.main.output) {
+        exclude 'META-INF/neoforge.mods.toml'
+        exclude 'build-info.properties'
+    }
+    from sourceSets.maintenance.output
+    from(sourceSets.worldTool.output) {
+        exclude 'dev/yu/worldrepair/worldtool/WorldToolMain*'
+        exclude 'dev/yu/worldrepair/worldtool/maintenance/MaintenanceWorkerMain*'
+    }
+    from(tasks.named('maintenanceWorkerJar').flatMap { it.archiveFile }) {
+        into 'META-INF/yuworldrepair'
+        rename { 'worker.jar' }
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+    manifest {
+        attributes(
+                'Implementation-Title': 'YuWorldRepair Server Maintenance Edition',
+                'Implementation-Version': '2.1.0-rc1+mc1.21.1-neoforge',
+                'Data-Mutation': 'post-shutdown-verified-adapters-only',
+                'Worker-Main-Class':
+                        'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain'
+        )
+    }
+}
+
+tasks.register('maintenanceSourcesJar', Jar) {
+    group = 'build'
+    description = 'Builds sources for the server maintenance Mod edition.'
+    archiveBaseName = 'YuWorldRepair'
+    archiveVersion = '2.1.0-rc1+mc1.21.1-neoforge'
+    archiveClassifier = 'sources'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from sourceSets.main.allSource
+    from sourceSets.maintenance.allSource
+    from(sourceSets.worldTool.allSource) {
+        exclude 'dev/yu/worldrepair/worldtool/WorldToolMain*'
+    }
+}
+
+tasks.register('verifyReleaseBoundary') {
+    group = 'verification'
+    description = 'Proves that the 1.0 release artifact has no data-mutation entry point.'
+    dependsOn tasks.named('jar')
+    dependsOn tasks.named('sourcesJar')
+    doLast {
+        def artifact = tasks.named('jar').get().archiveFile.get().asFile
+            def forbiddenPrefixes = [
+                    'dev/yu/worldrepair/migration/',
+                    'dev/yu/worldrepair/integration/ae2/internal/',
+                    'dev/yu/worldrepair/worldtool/',
+                    'dev/yu/worldrepair/maintenance/'
+            ]
+        def forbiddenEntry = { entry ->
+            forbiddenPrefixes.any { prefix -> entry.name.startsWith(prefix) }
+                    || entry.name.startsWith('dev/yu/worldrepair/integration/ae2/Ae2MigrationBridgeFactory')
+        }
+        [
+                artifact,
+                tasks.named('sourcesJar').get().archiveFile.get().asFile
+        ].each { checkedArtifact ->
+            new java.util.jar.JarFile(checkedArtifact).withCloseable { checkedJar ->
+                def forbiddenEntries = checkedJar.entries().findAll(forbiddenEntry)
+                if (!forbiddenEntries.isEmpty()) {
+                    throw new GradleException(
+                            "${checkedArtifact.name} contains mutation entries: ${forbiddenEntries*.name}"
+                    )
+                }
+            }
+        }
+
+        new java.util.jar.JarFile(artifact).withCloseable { releaseJar ->
+            def forbiddenEntries = releaseJar.entries().findAll { entry ->
+                forbiddenEntry(entry)
+            }
+            if (!forbiddenEntries.isEmpty()) {
+                throw new GradleException("1.0 release contains mutation classes: ${forbiddenEntries*.name}")
+            }
+
+            def commandsEntry = releaseJar.getJarEntry('dev/yu/worldrepair/command/YuWorldRepairCommands.class')
+            def commandsBytes = releaseJar.getInputStream(commandsEntry).bytes
+            def commandsText = new String(commandsBytes, java.nio.charset.StandardCharsets.ISO_8859_1)
+            def forbiddenTokens = ['quarantine', 'restore', 'enableExperimentalMigration']
+            def leakedTokens = forbiddenTokens.findAll { commandsText.contains(it) }
+            if (!leakedTokens.isEmpty()) {
+                throw new GradleException("1.0 command class exposes mutation tokens: ${leakedTokens}")
+            }
+
+            def buildInfo = releaseJar.getInputStream(releaseJar.getJarEntry('build-info.properties'))
+                    .getText('UTF-8')
+            if (!buildInfo.contains('data.mutation=false')) {
+                throw new GradleException('1.0 build-info does not assert data.mutation=false')
+            }
+        }
+    }
+}
+
+tasks.register('verifyWorldToolBoundary') {
+    group = 'verification'
+    description = 'Verifies the experimental tool is standalone, explicit, and license-complete.'
+    dependsOn tasks.named('worldToolJar')
+    doLast {
+        def artifact = tasks.named('worldToolJar').get().archiveFile.get().asFile
+        if (!artifact.name.contains('1.1.0-experimental+mc1.21.1')) {
+            throw new GradleException("World tool artifact is not explicitly experimental: ${artifact.name}")
+        }
+        new java.util.jar.JarFile(artifact).withCloseable { toolJar ->
+            def entries = toolJar.entries().collect { it.name }
+            def forbidden = entries.findAll { name ->
+                name.startsWith('net/minecraft/')
+                        || name.startsWith('net/neoforged/')
+                        || name.startsWith('dev/yu/worldrepair/worldtool/maintenance/')
+                        || name.endsWith('.class')
+                        && name.startsWith('dev/yu/worldrepair/')
+                        && !name.startsWith('dev/yu/worldrepair/worldtool/')
+            }
+            if (!forbidden.isEmpty()) {
+                throw new GradleException("Standalone world tool contains forbidden runtime classes: ${forbidden}")
+            }
+            [
+                    'dev/yu/worldrepair/worldtool/WorldToolMain.class',
+                    'META-INF/LICENSE-YUWORLDREPAIR.txt',
+                    'META-INF/LICENSE-APACHE-2.0.txt',
+                    'META-INF/THIRD-PARTY-NOTICES.txt'
+            ].each { required ->
+                if (toolJar.getJarEntry(required) == null) {
+                    throw new GradleException("Standalone world tool is missing ${required}")
+                }
+            }
+            def manifest = toolJar.manifest.mainAttributes
+            if (manifest.getValue('Main-Class') != 'dev.yu.worldrepair.worldtool.WorldToolMain'
+                    || manifest.getValue('Data-Mutation') != 'offline-world-copy-only') {
+                throw new GradleException('Standalone world tool manifest safety attributes are invalid')
+            }
+        }
+    }
+}
+
+tasks.register('verifyMaintenanceBoundary') {
+    group = 'verification'
+    description = 'Verifies the server maintenance Mod and its isolated worker boundary.'
+    dependsOn tasks.named('maintenanceJar')
+    doLast {
+        def artifact = tasks.named('maintenanceJar').get().archiveFile.get().asFile
+        new java.util.jar.JarFile(artifact).withCloseable { maintenance ->
+            [
+                    'dev/yu/worldrepair/YuWorldRepair.class',
+                    'dev/yu/worldrepair/maintenance/MaintenanceBootstrap.class',
+                    'dev/yu/worldrepair/maintenance/MaintenanceController.class',
+                    'dev/yu/worldrepair/worldtool/WorldRepairService.class',
+                    'META-INF/yuworldrepair/worker.jar',
+                    'META-INF/neoforge.mods.toml',
+                    'maintenance-build-info.properties',
+                    'META-INF/LICENSE-YUWORLDREPAIR.txt',
+                    'META-INF/LICENSE-APACHE-2.0.txt',
+                    'META-INF/THIRD-PARTY-NOTICES.txt'
+            ].each { required ->
+                if (maintenance.getJarEntry(required) == null) {
+                    throw new GradleException("Maintenance artifact is missing ${required}")
+                }
+            }
+            if (maintenance.getJarEntry(
+                    'dev/yu/worldrepair/worldtool/WorldToolMain.class'
+            ) != null) {
+                throw new GradleException('Maintenance Mod must not expose the standalone CLI')
+            }
+            def workerRuntimeLeaks = maintenance.entries().findAll { entry ->
+                entry.name.startsWith('dev/yu/worldrepair/worldtool/')
+                        && entry.name.endsWith('.class')
+                        && {
+                    def text = new String(
+                            maintenance.getInputStream(entry).bytes,
+                            java.nio.charset.StandardCharsets.ISO_8859_1
+                    )
+                    text.contains('net/minecraft/') || text.contains('net/neoforged/')
+                }()
+            }
+            if (!workerRuntimeLeaks.isEmpty()) {
+                throw new GradleException(
+                        "Post-shutdown worker links game runtime classes: "
+                                + workerRuntimeLeaks*.name
+                )
+            }
+            def embeddedBytes = maintenance.getInputStream(
+                    maintenance.getJarEntry('META-INF/yuworldrepair/worker.jar')
+            ).bytes
+            def embeddedPath = new File(
+                    temporaryDir,
+                    'verify-maintenance-worker.jar'
+            )
+            embeddedPath.parentFile.mkdirs()
+            embeddedPath.bytes = embeddedBytes
+            new java.util.jar.JarFile(embeddedPath).withCloseable { worker ->
+                [
+                        'dev/yu/worldrepair/worldtool/maintenance/MaintenanceWorkerMain.class',
+                        'dev/yu/worldrepair/worldtool/WorldRepairService.class',
+                        'dev/yu/worldrepair/worldtool/namespace/NamespaceRepairService.class',
+                        'com/google/gson/Gson.class'
+                ].each { required ->
+                    if (worker.getJarEntry(required) == null) {
+                        throw new GradleException("Embedded worker is missing ${required}")
+                    }
+                }
+                def gameLeaks = worker.entries().findAll { entry ->
+                    entry.name.startsWith('net/minecraft/')
+                            || entry.name.startsWith('net/neoforged/')
+                }
+                if (!gameLeaks.isEmpty()) {
+                    throw new GradleException(
+                            "Embedded worker packages game runtime classes: ${gameLeaks*.name}"
+                    )
+                }
+            }
+            def manifest = maintenance.manifest.mainAttributes
+            if (manifest.getValue('Data-Mutation')
+                    != 'post-shutdown-verified-adapters-only') {
+                throw new GradleException('Maintenance manifest mutation boundary is invalid')
+            }
+            def metadata = maintenance.getInputStream(
+                    maintenance.getJarEntry('META-INF/neoforge.mods.toml')
+            ).getText('UTF-8')
+            if (!metadata.contains('2.1.0-rc1+mc1.21.1-neoforge')) {
+                throw new GradleException('Maintenance Mod metadata version is invalid')
+            }
+        }
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyReleaseBoundary')
+    dependsOn tasks.named('verifyWorldToolBoundary')
+    dependsOn tasks.named('worldToolTest')
+    dependsOn tasks.named('maintenanceTest')
+    dependsOn tasks.named('verifyMaintenanceBoundary')
+}
+
+tasks.named('assemble') {
+    dependsOn tasks.named('worldToolJar')
+    dependsOn tasks.named('worldToolSourcesJar')
+    dependsOn tasks.named('maintenanceJar')
+    dependsOn tasks.named('maintenanceSourcesJar')
+}
+
+tasks.register('benchmarkGuard', JavaExec) {
+    group = 'verification'
+    description = 'Runs the allocation-conscious guard microbenchmark.'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.yu.worldrepair.benchmark.GuardBenchmark'
+    dependsOn testClasses
+}
