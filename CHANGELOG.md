@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.1.0-rc3 short-sector Anvil compatibility
+
+- Accept otherwise valid `.mca` files whose physical size ends immediately after the final
+  declared chunk record instead of including zero padding through the allocated 4 KiB sector.
+- During copy-on-write, validate and read exactly the unedited record's `length + 4` bytes, then
+  zero-fill only the missing sector tail in the rewritten file.
+- Continue to fail closed when the declared payload itself is truncated, the record exceeds its
+  allocated sectors, or its compression/external marker is invalid.
+- Reproduce the RC2 failure with a synthetic regression and verify the supplied 157,629-byte
+  `r.-7.1.mca`: 36 chunks read, 35 unedited chunks semantically identical after rewrite, and the
+  source SHA-256 unchanged.
+
 ## 2.1.0-rc2 large-world scoped maintenance
 
 - Fold legacy `iceandfire-chicken-data` cleanup into the single public

@@ -7,7 +7,7 @@
 - The supplied pack has no identifiable `aio` JAR/modid. Mekanism QIO is supported; a distinct
   AIO implementation requires its exact modid and storage schema.
 
-- `2.1.0-rc2` 已完成真实 34 世界隔离副本写入验证，但尚未完成“游戏内请求 → 保存/停服 → worker 修复 → 面板拉起 → 玩家登录 → 回滚”的生产形态整链演练，因此不能标记为生产稳定版。
+- `2.1.0-rc3` 已完成真实 34 世界隔离副本写入验证及真实短扇区尾区域文件重写验证，但尚未完成“游戏内请求 → 保存/停服 → worker 修复 → 面板拉起 → 玩家登录 → 回滚”的生产形态整链演练，因此不能标记为生产稳定版。
 - 多世界维护只包含发起命令时由 Youer/Bukkit 暴露为“已加载”的独立世界。没有加载的 MV 世界不会被猜测或遍历；需要先加载后再发起维护。
 - `orphaned-items except/only` 是显式部分 region 范围。排除的世界仍扫描 playerdata 和受支持 SavedData；QIO 类型缓存删除会延迟，报告不能解释为全服 region 已清零。
 - `scan-progress.json` 是持久进度快照，不支持在 JVM 中断后从已完成 region 自动续跑。

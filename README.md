@@ -37,7 +37,7 @@ YuVault behavior, and the 34-world regression evidence are in
 
 YuWorldRepair 是面向 Minecraft 1.21.1 / NeoForge 21.1.x 的服务端世界修复 Mod。它用于处理 Mod 更新或移除后遗留的孤儿实体、附件、方块、方块实体和计划刻，并为每次写入提供停服交接、完整备份、写后验证和受控回滚。
 
-> 当前维护版为 `2.1.0-rc2`。它适合在完整整服快照和隔离副本演练后进行受控维护，但尚未完成真实 Youer 服务器的“请求—停服—修复—面板拉起—玩家登录—回滚”全链验证，因此不应标记为生产稳定版。
+> 当前维护版为 `2.1.0-rc3`。它适合在完整整服快照和隔离副本演练后进行受控维护，但尚未完成真实 Youer 服务器的“请求—停服—修复—面板拉起—玩家登录—回滚”全链验证，因此不应标记为生产稳定版。
 
 ## 环境要求
 
@@ -49,7 +49,7 @@ YuWorldRepair 是面向 Minecraft 1.21.1 / NeoForge 21.1.x 的服务端世界修
 维护版产物：
 
 ```text
-build/libs/YuWorldRepair-2.1.0-rc2+mc1.21.1-neoforge.jar
+build/libs/YuWorldRepair-2.1.0-rc3+mc1.21.1-neoforge.jar
 ```
 
 只把这一份维护版 JAR 放入服务端 `mods`。不要同时安装仓库生成的 `1.0.0` 观察版，因为两者使用同一个 Mod ID：`yuworldrepair`。
@@ -115,6 +115,81 @@ build/libs/YuWorldRepair-2.1.0-rc2+mc1.21.1-neoforge.jar
 
 `<modid>` 是资源 ID 冒号前的命名空间。例如 `examplemod:machine` 的 Mod ID 是 `examplemod`。`minecraft`、`neoforge` 和 `forge` 被禁止作为清理目标。
 
+## 支持矩阵与非支持范围
+
+YuWorldRepair 不是通用 NBT 字符串删除器，也不是 Minecraft 全数据类型垃圾回收器。
+它只修改已经实现、可以精确定位并能在写后验证的结构。报告中的
+`cleanupComplete=true` 只表示**本次指令所覆盖的适配器范围**已经扫描、修改并复验
+完成，不表示世界中所有可能的 Mod 残留都为零。
+
+### 指令实际覆盖范围
+
+| 指令 | 自动识别范围 | 不会处理 |
+|---|---|---|
+| `repair orphaned-items` | 一次识别所有命名空间中不在实时 `ITEM` 注册表内的 ItemStack，以及不在实时 attachment 注册表内的 NeoForge attachment | 方块、实体、群系、结构、POI、维度和任意私有 SavedData |
+| `repair orphaned <modid>` | 只处理指定命名空间中已不在实时注册表内的实体、attachment、方块、方块实体及方块/流体计划刻 | 其他 modid；物品；群系、结构、POI、维度和私有 SavedData |
+| `repair prepare-remove <modid>` | Mod 尚未删除时，显式清理指定命名空间在已支持实体/attachment/方块结构中的数据 | 物品以及所有尚未实现的数据类型 |
+| `repair iceandfire` | 等同于 `prepare-remove iceandfire` 的快捷方式 | 不代表自动清理 Ice and Fire 的所有私有数据格式 |
+| `orphaned-items only/except ...` | 仅改变 region/entities 扫描范围；playerdata 与已支持 SavedData 仍按文档处理 | 被排除 region 中的物品；存在排除时不会立即删除 QIO 类型缓存 |
+
+### 已支持
+
+| 数据类型 | 当前行为 | 限制 |
+|---|---|---|
+| 普通 ItemStack | 使用服务器停服前签名的实时 `ITEM` 注册表验证完整资源 ID；删除失效物品 | 由 `orphaned-items` 处理，不使用 Bukkit `Material` 判空 |
+| 玩家和普通容器物品 | 扫描 playerdata、实体、方块实体、掉落物，以及标准容器、潜影盒、收纳袋等嵌套 ItemStack | 不猜测完全私有的非 ItemStack 背包格式 |
+| AE2 | 清理已验证的存储元件 inventory/config 项 | 只覆盖已实现的 AE2 1.21 数据形状 |
+| Refined Storage | 清理 `refinedstorage_storages.dat` 中已验证的物品资源项 | 不删除整个 RS 网络或未知 RS 私有数据 |
+| Mekanism QIO | 联合 QIO 类型缓存和区块内驱动 UUID，删除类型、别名、驱动条目并更新数量/类型元数据 | 排除任何 region 时只统计并延期缓存删除 |
+| NeoForge attachment | 依据实时 `ATTACHMENT_TYPES` 注册表，删除已扫描 holder 中任意深度的失效 attachment | 不把任意名称相似的普通 NBT 当 attachment |
+| 实体和乘客 | 按指定 modid 的实时 `ENTITY_TYPE` 注册表删除失效标准实体及乘客 | 不处理有效实体内部失效的属性、效果、职业、Brain 等引用 |
+| 方块状态 | 将指定 modid 下失效的 `block_states.palette` 项替换为 `minecraft:air` | `orphaned-items` 不处理方块；需要 `orphaned <modid>` |
+| 方块实体 | 删除指定 modid 下失效的标准方块实体 | 有效方块实体内部的未知私有字段只处理其中已支持的物品 |
+| 计划刻 | 删除对应的失效方块刻和流体刻 | 不处理 Mod 私有调度系统 |
+| 区域文件 | 支持内部 `.mca`、外置 `.mcc`、0 字节空 region 跳过，以及末扇区缺少零填充但声明载荷完整的 region | 声明载荷本身截断、位置重叠或压缩类型无效时失败关闭 |
+| 多世界 | 扫描主世界、下界、末地、已加载的 MV/Youer 世界根和其自定义维度 region | 不凭仍存在但未加载的 MV 配置项猜测不存在的世界目录 |
+
+### 条件支持或故意保留
+
+| 数据类型 | 行为 |
+|---|---|
+| Bukkit/PDC 自定义物品 | 外层是有效原版或已注册物品时会整体保留；不会因为 Bukkit 映射成 `Material.AIR` 而删除 |
+| 插件虚拟物品 | 使用原版物品加 PDC/CustomModelData 的常规形式会保留；把未注册 ID 直接写成 ItemStack `id` 的私有格式不能保证自动区分 |
+| 自定义维度区块 | 如果该维度属于已签名世界根，会扫描其中的标准 region/entities；不会删除整个维度目录或修改生成器 |
+| 注册 ID 仍存在但数据格式已变 | 只有已实现的精确结构适配器能够处理；不能仅凭相同 ID 判断新版 Mod 的私有字段语义 |
+| 由 Mod 结构生成的原版方块 | 原版方块仍有效，因此保留；仅失效的 Mod 方块能够按方块策略替换为空气 |
+| 配置、数据库和插件数据 | 默认保留，避免把仍由其他插件使用的数据当成世界垃圾删除 |
+
+### 当前不支持
+
+以下残留不会被现有指令删除；其中一部分可能被 Minecraft 在单个对象加载和重存时
+偶然丢弃，但原版不会主动扫描整服并保证清零：
+
+| 残留类别 | 典型位置或内容 | 可能影响 |
+|---|---|---|
+| 群系 | `sections[].biomes.palette` | 区块解码警告或失败 |
+| 结构元数据 | `structures.starts`、`structures.References`、structure set、模板池和处理器列表 | 结构引用报错；已生成结构的元数据长期残留 |
+| POI | `poi/r.*.mca` 中的工作站、传送点和其他 Mod POI 类型 | POI 区域或村民 AI 异常 |
+| 维度与世界生成配置 | `level.dat` 中的 LevelStem、DimensionType、ChunkGenerator、NoiseSettings、BiomeSource | 严重时服务器在游戏内指令可用前就启动失败 |
+| 自定义维度目录 | `dimensions/<modid>/<dimension>/` | 不会自动删除，占用磁盘并可能仍被外部世界管理器引用 |
+| 玩家维度引用 | 当前维度、重生维度、死亡位置、磁石目标及其他跨维度位置 | 玩家登录、重生或传送异常 |
+| 世界生成注册项 | configured/placed feature、carver、noise、density function、surface rule 等 | 新区块生成或数据包加载失败 |
+| ItemStack 数据组件类型 | `components.<modid:component>` | 外层物品有效但组件无法解码或同步 |
+| 组件内部注册项 | 附魔、药水、属性、乐器、唱片、纹饰、旗帜/陶罐图案、地图装饰等 | 物品、方块实体或客户端同步异常 |
+| 有效实体的内部注册项 | 属性、效果、变种、村民职业/类型、Brain memory/sensor/schedule/activity | 实体类型仍有效，但内部数据加载异常 |
+| 嵌套实体引用 | 玩家 RootVehicle/肩膀实体、物品 `entity_data`、刷怪笼或刷怪蛋内部实体 | 外层对象有效但内部实体 ID 失效 |
+| LootTable 引用 | 未开启容器、实体或其他 holder 中的战利品表 ID | 打开时空掉、报错或重复记录日志 |
+| 玩家配方书 | playerdata 中已删除的配方 ID | 无效配方记录长期保留 |
+| 进度和统计 | `advancements/<uuid>.json`、`stats/<uuid>.json` | 删除 Mod 的进度、物品、方块、实体或自定义统计残留 |
+| Mod 私有 SavedData | `data/<modid>*.dat`，任务、领地、经济、队伍、传送器和机械网络 | 无通用安全删除语义；当前只报告 `saved_data_requires_adapter` |
+| 强加载区块和票据 | `data/chunks.dat` 及 Mod/NeoForge ticket 数据 | 无效强加载票据或幽灵区块引用 |
+| 命令存储和计划函数 | command storage、scheduled function 和 Mod 函数资源 ID | 无效函数或长期垃圾数据 |
+| 计分板数据 | `scoreboard.dat` 中的 Mod criteria、统计目标和显示数据 | 目标失效或持续警告 |
+| 地图及装饰数据 | `map_*.dat` 和地图物品中的 Mod decoration type | 地图加载或客户端渲染异常 |
+| 数据包启用记录 | `level.dat` 中的启用/禁用数据包和旧 Mod 数据包引用 | 启动警告或数据包加载错误 |
+| Mod 自定义注册表 | 技能、法术、任务、机器类型等由 Mod 自己定义的注册表 | Mod 删除后连注册表定义都不存在，不能根据普通字符串安全推断 |
+| 插件/PDC/外部数据库 | Bukkit PDC、插件 YAML、SQLite、MySQL 和面板数据 | 故意不自动删除；必须由对应插件或管理员决定 |
+
 ## 扫描和修改范围
 
 命名空间维护会先通过 Youer/Bukkit 世界桥记录主世界以及 MV 等插件当前加载的独立世界目录，并把完整目录集合绑定进 HMAC 请求。停服后会扫描每个世界存档中所有已经生成并落盘的标准数据，而不只扫描停服前加载的区块：
@@ -138,14 +213,10 @@ QIO 驱动继续引用已删 UUID。结果会明确标记 `regionScopeComplete=f
 `detectedByMod` 与 `removedByMod`。只要存在被排除的 region 或延期目标，
 `cleanupComplete` 就明确为 `false`。
 
-以下数据没有统一安全删除语义，目前只审计或交给 Minecraft 自身处理：
-
-- Mod 私有 SavedData、任务、领地、经济、队伍和网络；
-- AE2 等数字仓储网络内部数据；
-- 整个自定义维度目录和世界生成器；
-- 非标准背包私有格式；
-- 注册 ID 仍存在、但新版 Mod 改变了私有 NBT 字段语义的升级损坏；
-- 标准 inventory、末影箱和容器 ItemStack 的缺失物品清理由 Minecraft codec 处理。
+不在上述支持矩阵内的数据不会因为作业显示成功而被视为已经清理。报告中的
+`saved_data_requires_adapter`、`dimension_directory_not_deleted`、
+`unknown_custom_saveddata_schemas_are_not_modified` 等警告表示仍有明确的非覆盖范围，
+需要专用适配器或管理员决策。
 
 ## 备份与回滚
 

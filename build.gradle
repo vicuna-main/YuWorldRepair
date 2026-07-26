@@ -255,7 +255,7 @@ tasks.register('maintenanceWorkerJar', Jar) {
                 'Main-Class':
                         'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain',
                 'Implementation-Title': 'YuWorldRepair Post-Shutdown Worker',
-                'Implementation-Version': '2.1.0-rc2+mc1.21.1',
+                'Implementation-Version': '2.1.0-rc3+mc1.21.1',
                 'Data-Mutation': 'exact-authorized-unlocked-world-only'
         )
     }
@@ -265,7 +265,7 @@ tasks.register('maintenanceJar', Jar) {
     group = 'build'
     description = 'Builds the server Mod edition with post-shutdown repair and rollback worker.'
     archiveBaseName = 'YuWorldRepair'
-    archiveVersion = '2.1.0-rc2+mc1.21.1-neoforge'
+    archiveVersion = '2.1.0-rc3+mc1.21.1-neoforge'
     dependsOn tasks.named('maintenanceWorkerJar')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from(sourceSets.main.output) {
@@ -288,7 +288,7 @@ tasks.register('maintenanceJar', Jar) {
                 'Main-Class':
                         'dev.yu.worldrepair.supervisor.MaintenanceSupervisorMain',
                 'Implementation-Title': 'YuWorldRepair Server Maintenance Edition',
-                'Implementation-Version': '2.1.0-rc2+mc1.21.1-neoforge',
+                'Implementation-Version': '2.1.0-rc3+mc1.21.1-neoforge',
                 'Data-Mutation': 'post-shutdown-verified-adapters-only',
                 'Worker-Main-Class':
                         'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain'
@@ -300,7 +300,7 @@ tasks.register('maintenanceSourcesJar', Jar) {
     group = 'build'
     description = 'Builds sources for the server maintenance Mod edition.'
     archiveBaseName = 'YuWorldRepair'
-    archiveVersion = '2.1.0-rc2+mc1.21.1-neoforge'
+    archiveVersion = '2.1.0-rc3+mc1.21.1-neoforge'
     archiveClassifier = 'sources'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from sourceSets.main.allSource
@@ -516,7 +516,7 @@ tasks.register('verifyMaintenanceBoundary') {
             def metadata = maintenance.getInputStream(
                     maintenance.getJarEntry('META-INF/neoforge.mods.toml')
             ).getText('UTF-8')
-            if (!metadata.contains('2.1.0-rc2+mc1.21.1-neoforge')) {
+            if (!metadata.contains('2.1.0-rc3+mc1.21.1-neoforge')) {
                 throw new GradleException('Maintenance Mod metadata version is invalid')
             }
         }

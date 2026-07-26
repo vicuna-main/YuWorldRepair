@@ -1,6 +1,6 @@
 # 全部失效 Mod 物品：一次统计并清理
 
-适用版本：YuWorldRepair `2.1.0-rc2` 维护版、Minecraft 1.21.1、Youer/NeoForge。
+适用版本：YuWorldRepair `2.1.0-rc3` 维护版、Minecraft 1.21.1、Youer/NeoForge。
 
 ## 运维只需要执行什么
 

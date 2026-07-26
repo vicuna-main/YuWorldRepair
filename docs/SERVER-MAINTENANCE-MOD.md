@@ -1,11 +1,11 @@
-# YuWorldRepair 服务端维护版 2.1.0-rc2
+# YuWorldRepair 服务端维护版 2.1.0-rc3
 
 这是可直接放入独立服务端 `mods` 的 NeoForge 服务端 Mod。服主在游戏内发起并二次确认；Mod 强制保存、踢出玩家并停服，隔离 worker 只在服务端进程退出且 `session.lock` 可获得后修改世界。所有受影响文件先做完整 SHA-256 备份，采用副本写入与原子替换，应用后重新解析并验证；失败时自动回滚。下次启动会在世界加载前检查维护终态。
 
 当前产物：
 
 ```text
-build/libs/YuWorldRepair-2.1.0-rc2+mc1.21.1-neoforge.jar
+build/libs/YuWorldRepair-2.1.0-rc3+mc1.21.1-neoforge.jar
 ```
 
 运行要求：Java 21、Minecraft 1.21.1、NeoForge 21.1.241 至 21.1.x。不要同时安装同 Mod ID 的 1.0.0 观察版。

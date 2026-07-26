@@ -5,7 +5,7 @@
 只部署一个文件。把构建产物
 
 ```text
-YuWorldRepair-2.1.0-rc2+mc1.21.1-neoforge.jar
+YuWorldRepair-2.1.0-rc3+mc1.21.1-neoforge.jar
 ```
 
 复制或重命名为：

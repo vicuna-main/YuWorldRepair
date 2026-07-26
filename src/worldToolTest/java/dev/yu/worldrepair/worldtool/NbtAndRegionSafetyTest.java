@@ -10,9 +10,12 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -137,6 +140,120 @@ class NbtAndRegionSafetyTest {
     }
 
     @Test
+    void rewritePadsMissingFinalSectorTailAfterValidChunkPayload() throws Exception {
+        Path world = WorldToolFixture.createWorld(temporary.resolve("short-sector-world"));
+        Path region = WorldToolFixture.writeEntityRegion(
+                world,
+                "entities",
+                0,
+                0,
+                2,
+                List.of(WorldToolFixture.entity(
+                        "minecraft:chicken",
+                        UUID.randomUUID(),
+                        false,
+                        false,
+                        List.of()
+                ))
+        );
+        WorldToolFixture.addEntityChunk(
+                region,
+                1,
+                0,
+                2,
+                List.of(WorldToolFixture.entity(
+                        "minecraft:cow",
+                        UUID.randomUUID(),
+                        false,
+                        false,
+                        List.of()
+                ))
+        );
+        String untouchedSemanticHash = Nbt.semanticSha256(
+                RegionFile.readChunk(region, 1, Nbt.Limits.conservative()).root().tag()
+        );
+        truncateToDeclaredChunkEnd(region, 1, 0);
+        assertTrue(Files.size(region) % RegionFile.SECTOR_BYTES != 0);
+
+        Path rewrittenDirectory = temporary.resolve("short-sector-rewritten");
+        Files.createDirectories(rewrittenDirectory);
+        Path rewritten = rewrittenDirectory.resolve("r.0.0.mca");
+        Map<Integer, RegionFile.EditResult> edits = RegionFile.rewrite(
+                region,
+                rewritten,
+                Map.of(0, chunk -> {
+                    Nbt.CompoundTag root = (Nbt.CompoundTag) chunk.root().tag();
+                    root.put("yuworldrepair:compatibility_probe", new Nbt.IntTag(1));
+                    return new RegionFile.EditResult(
+                            true,
+                            1,
+                            Nbt.semanticSha256(root)
+                    );
+                }),
+                Nbt.Limits.conservative()
+        );
+
+        assertEquals(1, edits.size());
+        assertEquals(0, Files.size(rewritten) % RegionFile.SECTOR_BYTES);
+        assertEquals(
+                1,
+                ((Nbt.IntTag) ((Nbt.CompoundTag) RegionFile.readChunk(
+                                rewritten,
+                                0,
+                                Nbt.Limits.conservative()
+                        ).root().tag())
+                        .get("yuworldrepair:compatibility_probe")).value()
+        );
+        assertEquals(
+                untouchedSemanticHash,
+                Nbt.semanticSha256(
+                        RegionFile.readChunk(
+                                rewritten,
+                                1,
+                                Nbt.Limits.conservative()
+                        ).root().tag()
+                )
+        );
+    }
+
+    @Test
+    void rewriteStillRejectsChunkWithTruncatedDeclaredPayload() throws Exception {
+        Path world = WorldToolFixture.createWorld(temporary.resolve("truncated-payload-world"));
+        Path region = WorldToolFixture.writeEntityRegion(
+                world,
+                "entities",
+                0,
+                0,
+                2,
+                List.of()
+        );
+        WorldToolFixture.addEntityChunk(region, 1, 0, 2, List.of());
+        truncateToDeclaredChunkEnd(region, 1, -1);
+        Path rewrittenDirectory = temporary.resolve("truncated-payload-rewritten");
+        Files.createDirectories(rewrittenDirectory);
+        Path rewritten = rewrittenDirectory.resolve("r.0.0.mca");
+
+        assertThrows(
+                IOException.class,
+                () -> RegionFile.rewrite(
+                        region,
+                        rewritten,
+                        Map.of(0, chunk -> {
+                            Nbt.CompoundTag root = (Nbt.CompoundTag) chunk.root().tag();
+                            root.put("yuworldrepair:compatibility_probe", new Nbt.IntTag(1));
+                            return new RegionFile.EditResult(
+                                    true,
+                                    1,
+                                    Nbt.semanticSha256(root)
+                            );
+                        }),
+                        Nbt.Limits.conservative()
+                )
+        );
+        assertTrue(Files.notExists(rewritten));
+    }
+
+    @Test
     void overlappingRegionSectorsAreRejected() throws Exception {
         Path region = temporary.resolve("r.0.0.mca");
         byte[] bytes = new byte[3 * RegionFile.SECTOR_BYTES];
@@ -178,5 +295,21 @@ class NbtAndRegionSafetyTest {
                 () -> RegionFile.readChunk(invalid, 0, Nbt.Limits.conservative())
         );
         assertTrue(failure.getMessage().contains("compression"));
+    }
+
+    private static void truncateToDeclaredChunkEnd(
+            Path region,
+            int chunkX,
+            int delta
+    ) throws IOException {
+        byte[] headerAndRecords = Files.readAllBytes(region);
+        ByteBuffer bytes = ByteBuffer.wrap(headerAndRecords);
+        int location = bytes.getInt(chunkX * 4);
+        int sectorOffset = location >>> 8;
+        int length = bytes.getInt(sectorOffset * RegionFile.SECTOR_BYTES);
+        long declaredEnd = (long) sectorOffset * RegionFile.SECTOR_BYTES + 4L + length;
+        try (FileChannel channel = FileChannel.open(region, StandardOpenOption.WRITE)) {
+            channel.truncate(declaredEnd + delta);
+        }
     }
 }

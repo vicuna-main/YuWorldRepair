@@ -6,6 +6,14 @@ cross-Multiverse shared QIO UUID resolution, recursively nested NeoForge attachm
 against the signed attachment registry, post-apply zero-target verification, and byte-exact
 rollback.
 
+Anvil compatibility coverage includes files that end at the final chunk's declared
+`length + 4` boundary without the remainder of the allocated 4 KiB sector. Copy-on-write
+zero-fills that absent tail only after validating the complete record. A paired negative test
+removes one declared payload byte and verifies fail-closed behavior plus temporary-file cleanup.
+The supplied production `r.-7.1.mca` was also exercised non-destructively: all 36 chunks were
+read, the rewritten copy preserved the semantic hashes of all 35 unedited chunks, and the source
+SHA-256 remained `2089353c915a0dad6438b32689f6d240625afd758eb3f63bcb16ccc81db4f02d`.
+
 Large-world coverage additionally verifies deterministic four-worker region scanning, bounded
 progress completion, region-only world exclusion, continued playerdata/RS scanning, QIO cache
 deferral with per-namespace/per-store evidence under partial scope, unique/ambiguous MV labels,
@@ -56,12 +64,12 @@ plus twelve `kaleidoscope_tavern` ItemStacks. Apply, zero-target rescan, rollbac
 
 它们分别阻止观察版泄漏修改入口、离线工具依赖 Minecraft/NeoForge，以及维护版缺少嵌套 worker 或必要命令。
 
-当前发布候选完整构建通过，共 86 项测试：
+当前发布候选完整构建通过，共 88 项测试：
 
 - Minecraft/NeoForge 测试：22；
 - 维护交接测试：15；
 - 单 JAR supervisor 测试：1；
-- 离线工具测试：48；
+- 离线工具测试：50；
 - failure/error/skipped：0/0/0。
 
 ## 真实世界读写证据

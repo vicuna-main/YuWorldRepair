@@ -4,7 +4,7 @@ license = "MIT"
 
 [[mods]]
 modId = "yuworldrepair"
-version = "2.1.0-rc2+mc1.21.1-neoforge"
+version = "2.1.0-rc3+mc1.21.1-neoforge"
 displayName = "YuWorldRepair Server Maintenance Edition"
 authors = "YuWorldRepair contributors"
 displayTest = "IGNORE_ALL_VERSION"

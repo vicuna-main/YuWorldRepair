@@ -147,7 +147,13 @@ public final class RegionFile {
                 ChunkEditor editor = editors.get(index);
                 byte[] allocated;
                 if (editor == null) {
-                    allocated = readAllocatedSectors(input, oldOffset, oldSectors);
+                    allocated = readAllocatedSectors(
+                            input,
+                            source,
+                            index,
+                            oldOffset,
+                            oldSectors
+                    );
                 } else {
                     Chunk chunk = readChunk(input, source, region, header, index, limits);
                     if (chunk.external()) {
@@ -383,9 +389,44 @@ public final class RegionFile {
         return output.toByteArray();
     }
 
-    private static byte[] readAllocatedSectors(FileChannel channel, int offset, int sectors) throws IOException {
-        byte[] bytes = new byte[Math.multiplyExact(sectors, SECTOR_BYTES)];
-        readFully(channel, ByteBuffer.wrap(bytes), (long) offset * SECTOR_BYTES);
+    private static byte[] readAllocatedSectors(
+            FileChannel channel,
+            Path regionPath,
+            int index,
+            int offset,
+            int sectors
+    ) throws IOException {
+        int allocatedBytes = Math.multiplyExact(sectors, SECTOR_BYTES);
+        byte[] bytes = new byte[allocatedBytes];
+        long position = (long) offset * SECTOR_BYTES;
+
+        // A valid Anvil file may end immediately after the final chunk record instead
+        // of storing zero padding for the rest of its allocated 4 KiB sector. Read and
+        // validate the declared record, then leave any absent allocation tail zeroed.
+        readFully(channel, ByteBuffer.wrap(bytes, 0, 5), position);
+        ByteBuffer prefix = ByteBuffer.wrap(bytes, 0, 5);
+        int length = prefix.getInt();
+        int compressionByte = Byte.toUnsignedInt(prefix.get());
+        boolean external = (compressionByte & 0x80) != 0;
+        int compression = compressionByte & 0x7F;
+        validateCompression(compression);
+        if (length < 1 || length > allocatedBytes - 4) {
+            throw new IOException(
+                    "Invalid chunk length in " + regionPath + " slot " + index
+            );
+        }
+        if (external && length != 1) {
+            throw new IOException("External chunk marker has invalid length in slot " + index);
+        }
+
+        int remainingRecordBytes = length - 1;
+        if (remainingRecordBytes > 0) {
+            readFully(
+                    channel,
+                    ByteBuffer.wrap(bytes, 5, remainingRecordBytes),
+                    position + 5
+            );
+        }
         return bytes;
     }
 
