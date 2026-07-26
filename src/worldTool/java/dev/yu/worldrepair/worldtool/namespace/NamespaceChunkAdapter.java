@@ -18,6 +18,7 @@ public final class NamespaceChunkAdapter {
     private static final int MAX_DATA_VERSION = 3_955;
     private static final int MAX_VISITED_ENTITIES = 1_048_576;
     private static final int MAX_ENTITY_DEPTH = 64;
+    private static final OrphanItemNbtAdapter ITEM_ADAPTER = new OrphanItemNbtAdapter();
 
     public record Context(
             String dimension,
@@ -38,14 +39,35 @@ public final class NamespaceChunkAdapter {
             Context context,
             NamespacePolicy policy
     ) throws IOException {
+        return scan(root, context, policy, OrphanItemIndex.EMPTY);
+    }
+
+    public List<NamespaceTarget> scan(
+            Nbt.CompoundTag root,
+            Context context,
+            NamespacePolicy policy,
+            OrphanItemIndex itemIndex
+    ) throws IOException {
+        if (context.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA) {
+            return ITEM_ADAPTER.scanSavedData(root, context, policy, itemIndex);
+        }
         requireSupportedDataVersion(root);
         ArrayList<NamespaceTarget> targets = new ArrayList<>();
         if (context.regionKind() == NamespaceTarget.RegionKind.ENTITY) {
-            scanEntityChunk(root, context, policy, targets);
+            scanEntityChunk(root, context, policy, itemIndex, targets);
         } else if (context.regionKind() == NamespaceTarget.RegionKind.CHUNK) {
-            scanBlockChunk(root, context, policy, targets);
+            scanBlockChunk(root, context, policy, itemIndex, targets);
         } else {
-            scanAttachments(root, "", context, policy, targets);
+            if (!policy.isGlobalItemCleanup()) {
+                scanAttachments(root, "", context, policy, targets);
+            }
+            targets.addAll(ITEM_ADAPTER.scanHolder(
+                    root,
+                    "",
+                    context,
+                    policy,
+                    itemIndex
+            ));
         }
         targets.sort(Comparator
                 .comparing(NamespaceTarget::nbtPath)
@@ -60,18 +82,38 @@ public final class NamespaceChunkAdapter {
             NamespacePolicy policy,
             List<NamespaceTarget> expected
     ) throws IOException {
-        List<NamespaceTarget> actual = scan(root, context, policy);
+        return mutate(root, context, policy, OrphanItemIndex.EMPTY, expected);
+    }
+
+    public Mutation mutate(
+            Nbt.CompoundTag root,
+            Context context,
+            NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
+            List<NamespaceTarget> expected
+    ) throws IOException {
+        List<NamespaceTarget> actual = scan(root, context, policy, itemIndex);
         if (!actual.equals(expected)) {
             throw new IOException("Namespace target set changed after scan for "
                     + context.regionRelativePath() + " slot " + context.chunkIndex());
         }
         int changed;
-        if (context.regionKind() == NamespaceTarget.RegionKind.ENTITY) {
-            changed = mutateEntityChunk(root, policy);
+        if (context.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA) {
+            changed = ITEM_ADAPTER.mutateSavedData(
+                    root,
+                    context,
+                    policy,
+                    itemIndex
+            );
+        } else if (context.regionKind() == NamespaceTarget.RegionKind.ENTITY) {
+            changed = mutateEntityChunk(root, policy, itemIndex);
         } else if (context.regionKind() == NamespaceTarget.RegionKind.CHUNK) {
-            changed = mutateBlockChunk(root, policy);
+            changed = mutateBlockChunk(root, policy, itemIndex);
         } else {
-            changed = mutateAttachments(root, policy);
+            changed = (policy.isGlobalItemCleanup()
+                    ? 0
+                    : mutateAttachments(root, policy))
+                    + ITEM_ADAPTER.mutateHolder(root, policy, itemIndex);
         }
         if (changed != expected.size()) {
             throw new IOException("Namespace mutation count does not match exact target set");
@@ -83,6 +125,7 @@ public final class NamespaceChunkAdapter {
             Nbt.CompoundTag root,
             Context context,
             NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
             List<NamespaceTarget> targets
     ) throws IOException {
         Nbt.ListTag entities = requireCompoundList(root, "Entities", false);
@@ -97,6 +140,7 @@ public final class NamespaceChunkAdapter {
                     0,
                     context,
                     policy,
+                    itemIndex,
                     targets,
                     visited
             );
@@ -109,6 +153,7 @@ public final class NamespaceChunkAdapter {
             int depth,
             Context context,
             NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
             List<NamespaceTarget> targets,
             int[] visited
     ) throws IOException {
@@ -123,7 +168,35 @@ public final class NamespaceChunkAdapter {
             ));
             return;
         }
-        scanAttachments(entity, path, context, policy, targets);
+        OrphanItemNbtAdapter.ItemProblem itemProblem =
+                ITEM_ADAPTER.itemEntityProblem(entity, policy);
+        if (itemProblem != null) {
+            targets.add(new NamespaceTarget(
+                    context.dimension(),
+                    context.regionRelativePath(),
+                    context.chunkX(),
+                    context.chunkZ(),
+                    context.chunkIndex(),
+                    context.external(),
+                    context.regionKind(),
+                    NamespaceTarget.Action.REMOVE_ITEM_ENTITY,
+                    path,
+                    itemProblem.resourceId(),
+                    NamespaceTarget.Store.ITEM_STACK,
+                    itemProblem.amount()
+            ));
+            return;
+        }
+        if (!policy.isGlobalItemCleanup()) {
+            scanAttachments(entity, path, context, policy, targets);
+        }
+        targets.addAll(ITEM_ADAPTER.scanHolder(
+                entity,
+                path,
+                context,
+                policy,
+                itemIndex
+        ));
         Nbt.ListTag passengers = requireCompoundList(entity, "Passengers", false);
         if (passengers == null) {
             return;
@@ -135,6 +208,7 @@ public final class NamespaceChunkAdapter {
                     depth + 1,
                     context,
                     policy,
+                    itemIndex,
                     targets,
                     visited
             );
@@ -145,9 +219,20 @@ public final class NamespaceChunkAdapter {
             Nbt.CompoundTag root,
             Context context,
             NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
             List<NamespaceTarget> targets
     ) throws IOException {
         scanAttachments(root, "", context, policy, targets);
+        Nbt.CompoundTag chunkAttachments = root.getCompound(ATTACHMENTS);
+        if (chunkAttachments != null) {
+            targets.addAll(ITEM_ADAPTER.scanAttachmentPayloads(
+                    chunkAttachments,
+                    ATTACHMENTS,
+                    context,
+                    policy,
+                    itemIndex
+            ));
+        }
         Nbt.ListTag sections = requireCompoundList(root, "sections", false);
         if (sections != null) {
             for (int sectionIndex = 0; sectionIndex < sections.size(); sectionIndex++) {
@@ -182,6 +267,18 @@ public final class NamespaceChunkAdapter {
                 policy,
                 targets
         );
+        Nbt.ListTag blockEntities = requireCompoundList(root, "block_entities", false);
+        if (blockEntities != null) {
+            for (int index = 0; index < blockEntities.size(); index++) {
+                targets.addAll(ITEM_ADAPTER.scanHolder(
+                        (Nbt.CompoundTag) blockEntities.get(index),
+                        "block_entities[" + index + "]",
+                        context,
+                        policy,
+                        itemIndex
+                ));
+            }
+        }
         scanIdList(
                 root,
                 "block_ticks",
@@ -253,7 +350,8 @@ public final class NamespaceChunkAdapter {
 
     private static int mutateEntityChunk(
             Nbt.CompoundTag root,
-            NamespacePolicy policy
+            NamespacePolicy policy,
+            OrphanItemIndex itemIndex
     ) throws IOException {
         Nbt.ListTag entities = requireCompoundList(root, "Entities", false);
         if (entities == null) {
@@ -263,7 +361,7 @@ public final class NamespaceChunkAdapter {
         int[] visited = {0};
         for (int index = entities.size() - 1; index >= 0; index--) {
             Nbt.CompoundTag entity = (Nbt.CompoundTag) entities.get(index);
-            if (mutateEntity(entity, 0, policy, changed, visited)) {
+            if (mutateEntity(entity, 0, policy, itemIndex, changed, visited)) {
                 entities.remove(index);
                 changed[0]++;
             }
@@ -275,6 +373,7 @@ public final class NamespaceChunkAdapter {
             Nbt.CompoundTag entity,
             int depth,
             NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
             int[] changed,
             int[] visited
     ) throws IOException {
@@ -285,12 +384,25 @@ public final class NamespaceChunkAdapter {
         )) {
             return true;
         }
-        changed[0] += mutateAttachments(entity, policy);
+        if (ITEM_ADAPTER.itemEntityProblem(entity, policy) != null) {
+            return true;
+        }
+        if (!policy.isGlobalItemCleanup()) {
+            changed[0] += mutateAttachments(entity, policy);
+        }
+        changed[0] += ITEM_ADAPTER.mutateHolder(entity, policy, itemIndex);
         Nbt.ListTag passengers = requireCompoundList(entity, "Passengers", false);
         if (passengers != null) {
             for (int index = passengers.size() - 1; index >= 0; index--) {
                 Nbt.CompoundTag passenger = (Nbt.CompoundTag) passengers.get(index);
-                if (mutateEntity(passenger, depth + 1, policy, changed, visited)) {
+                if (mutateEntity(
+                        passenger,
+                        depth + 1,
+                        policy,
+                        itemIndex,
+                        changed,
+                        visited
+                )) {
                     passengers.remove(index);
                     changed[0]++;
                 }
@@ -301,9 +413,18 @@ public final class NamespaceChunkAdapter {
 
     private static int mutateBlockChunk(
             Nbt.CompoundTag root,
-            NamespacePolicy policy
+            NamespacePolicy policy,
+            OrphanItemIndex itemIndex
     ) throws IOException {
         int changed = mutateAttachments(root, policy);
+        Nbt.CompoundTag chunkAttachments = root.getCompound(ATTACHMENTS);
+        if (chunkAttachments != null) {
+            changed += ITEM_ADAPTER.mutateHolder(
+                    chunkAttachments,
+                    policy,
+                    itemIndex
+            );
+        }
         Nbt.ListTag sections = requireCompoundList(root, "sections", false);
         if (sections != null) {
             for (int sectionIndex = 0; sectionIndex < sections.size(); sectionIndex++) {
@@ -347,6 +468,16 @@ public final class NamespaceChunkAdapter {
                 RegistrySnapshot.Category.FLUID,
                 policy
         );
+        Nbt.ListTag blockEntities = requireCompoundList(root, "block_entities", false);
+        if (blockEntities != null) {
+            for (int index = 0; index < blockEntities.size(); index++) {
+                changed += ITEM_ADAPTER.mutateHolder(
+                        (Nbt.CompoundTag) blockEntities.get(index),
+                        policy,
+                        itemIndex
+                );
+            }
+        }
         return changed;
     }
 

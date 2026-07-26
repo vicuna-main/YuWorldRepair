@@ -4,11 +4,16 @@ import java.io.IOException;
 import java.io.File;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
+import java.nio.channels.OverlappingFileLockException;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 public final class WorldAccessPolicy {
@@ -16,6 +21,7 @@ public final class WorldAccessPolicy {
     public static final String COPY_MARKER_CONTENT = "YUWORLDREPAIR_WORLD_COPY_V1";
     public static final String PROTECTED_ROOTS_PROPERTY =
             "yuworldrepair.protectedRoots";
+    private static final Set<Path> HELD_WORLD_LOCKS = new HashSet<>();
 
     private WorldAccessPolicy() {
     }
@@ -60,6 +66,120 @@ public final class WorldAccessPolicy {
      */
     public static Path requireExactUnlockedWorld(Path supplied, Path authorizedWorld)
             throws IOException {
+        Path realAuthorized = requireExactWorld(supplied, authorizedWorld);
+        synchronized (HELD_WORLD_LOCKS) {
+            if (HELD_WORLD_LOCKS.contains(realAuthorized)) {
+                return realAuthorized;
+            }
+        }
+        requireSessionLockAvailable(realAuthorized.resolve("session.lock"));
+        return realAuthorized;
+    }
+
+    /**
+     * Acquires every signed world lock as one all-or-nothing set and holds it until close.
+     */
+    public static HeldWorldLocks acquireExactWorldLocks(List<String> signedWorldRoots)
+            throws IOException {
+        if (signedWorldRoots == null || signedWorldRoots.isEmpty()) {
+            throw new IOException("No signed world roots were supplied for locking");
+        }
+        ArrayList<Path> roots = new ArrayList<>();
+        for (String value : signedWorldRoots) {
+            Path supplied;
+            try {
+                supplied = Path.of(value).toAbsolutePath().normalize();
+            } catch (RuntimeException invalid) {
+                throw new IOException("Signed world root is invalid", invalid);
+            }
+            Path real = requireExactWorld(supplied, supplied);
+            if (roots.contains(real)) {
+                throw new IOException("Signed world lock set contains a duplicate root");
+            }
+            roots.add(real);
+        }
+        roots.sort(Path::compareTo);
+
+        ArrayList<HeldLock> acquired = new ArrayList<>();
+        try {
+            for (Path root : roots) {
+                Path lockPath = root.resolve("session.lock");
+                rejectLinkChain(lockPath.getParent());
+                boolean created = false;
+                FileChannel channel;
+                if (Files.exists(lockPath, LinkOption.NOFOLLOW_LINKS)) {
+                    rejectLink(lockPath);
+                    channel = FileChannel.open(lockPath, StandardOpenOption.WRITE);
+                } else {
+                    channel = FileChannel.open(
+                            lockPath,
+                            StandardOpenOption.CREATE_NEW,
+                            StandardOpenOption.WRITE
+                    );
+                    created = true;
+                }
+                try {
+                    FileLock lock = channel.tryLock();
+                    if (lock == null) {
+                        throw new IOException(
+                                "World session.lock is held; the world may be active: " + root
+                        );
+                    }
+                    acquired.add(new HeldLock(root, lockPath, channel, lock, created));
+                } catch (OverlappingFileLockException overlapping) {
+                    channel.close();
+                    if (created) {
+                        Files.deleteIfExists(lockPath);
+                    }
+                    throw new IOException(
+                            "World session.lock is already held by this worker: " + root,
+                            overlapping
+                    );
+                } catch (IOException | RuntimeException failure) {
+                    channel.close();
+                    if (created) {
+                        Files.deleteIfExists(lockPath);
+                    }
+                    throw failure;
+                }
+            }
+            synchronized (HELD_WORLD_LOCKS) {
+                for (HeldLock held : acquired) {
+                    if (!HELD_WORLD_LOCKS.add(held.worldRoot())) {
+                        throw new IOException("World lock is already held by this worker");
+                    }
+                }
+            }
+            return new HeldWorldLocks(acquired);
+        } catch (IOException | RuntimeException failure) {
+            try {
+                releaseLocks(acquired);
+            } catch (IOException releaseFailure) {
+                failure.addSuppressed(releaseFailure);
+            }
+            throw failure;
+        }
+    }
+
+    public static void requireWorldLockHeldByThisWorker(Path worldRoot)
+            throws IOException {
+        Path normalized = worldRoot.toAbsolutePath().normalize();
+        if (!Files.isDirectory(normalized, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException("Maintenance world is not a directory");
+        }
+        rejectLinkChain(normalized);
+        Path real = normalized.toRealPath();
+        synchronized (HELD_WORLD_LOCKS) {
+            if (!HELD_WORLD_LOCKS.contains(real)) {
+                throw new IOException(
+                        "Trusted maintenance scan requires this worker to hold session.lock"
+                );
+            }
+        }
+    }
+
+    private static Path requireExactWorld(Path supplied, Path authorizedWorld)
+            throws IOException {
         if (!supplied.isAbsolute() || !authorizedWorld.isAbsolute()) {
             throw new IOException("Maintenance world paths must be absolute");
         }
@@ -82,7 +202,6 @@ public final class WorldAccessPolicy {
             throw new IOException("Maintenance world has no regular level.dat");
         }
         rejectLinkChain(levelDat);
-        requireSessionLockAvailable(realAuthorized.resolve("session.lock"));
         return realAuthorized;
     }
 
@@ -163,6 +282,75 @@ public final class WorldAccessPolicy {
         } catch (java.nio.channels.OverlappingFileLockException locked) {
             throw new IOException("World session.lock is held; the world may be active", locked);
         }
+    }
+
+    private static void releaseLocks(List<HeldLock> locks) throws IOException {
+        IOException combined = null;
+        for (int index = locks.size() - 1; index >= 0; index--) {
+            HeldLock held = locks.get(index);
+            synchronized (HELD_WORLD_LOCKS) {
+                HELD_WORLD_LOCKS.remove(held.worldRoot());
+            }
+            try {
+                held.lock().release();
+            } catch (IOException failure) {
+                combined = combine(combined, failure);
+            }
+            try {
+                held.channel().close();
+            } catch (IOException failure) {
+                combined = combine(combined, failure);
+            }
+            if (held.created()) {
+                try {
+                    Files.deleteIfExists(held.lockPath());
+                } catch (IOException failure) {
+                    combined = combine(combined, failure);
+                }
+            }
+        }
+        if (combined != null) {
+            throw combined;
+        }
+    }
+
+    private static IOException combine(IOException current, IOException addition) {
+        if (current == null) {
+            return addition;
+        }
+        current.addSuppressed(addition);
+        return current;
+    }
+
+    public static final class HeldWorldLocks implements AutoCloseable {
+        private final List<HeldLock> locks;
+        private boolean closed;
+
+        private HeldWorldLocks(List<HeldLock> locks) {
+            this.locks = List.copyOf(locks);
+        }
+
+        public List<Path> worldRoots() {
+            return locks.stream().map(HeldLock::worldRoot).toList();
+        }
+
+        @Override
+        public void close() throws IOException {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            releaseLocks(locks);
+        }
+    }
+
+    private record HeldLock(
+            Path worldRoot,
+            Path lockPath,
+            FileChannel channel,
+            FileLock lock,
+            boolean created
+    ) {
     }
 
     /**

@@ -1,6 +1,7 @@
 package dev.yu.worldrepair.worldtool.nbt;
 
 import java.io.BufferedOutputStream;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -8,10 +9,6 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.nio.ByteBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CodingErrorAction;
-import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -548,26 +545,30 @@ public final class Nbt {
         if (length > limits.maxStringBytes()) {
             throw new IOException("NBT string exceeds byte limit");
         }
-        byte[] bytes = new byte[length];
-        data.readFully(bytes);
+        byte[] encoded = new byte[length + 2];
+        encoded[0] = (byte) (length >>> 8);
+        encoded[1] = (byte) length;
+        data.readFully(encoded, 2, length);
         try {
-            return StandardCharsets.UTF_8.newDecoder()
-                    .onMalformedInput(CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(CodingErrorAction.REPORT)
-                    .decode(ByteBuffer.wrap(bytes))
-                    .toString();
-        } catch (CharacterCodingException invalidUtf8) {
-            throw new IOException("Invalid UTF-8 in NBT string", invalidUtf8);
+            // Minecraft's NBT codec uses DataInput.readUTF/DataOutput.writeUTF, whose wire
+            // format is Java Modified UTF-8 rather than standard UTF-8. Rebuilding the bounded
+            // two-byte length prefix lets the JDK perform the exact compatible decoding while
+            // retaining this codec's allocation limit.
+            try (DataInputStream modifiedUtf =
+                         new DataInputStream(new ByteArrayInputStream(encoded))) {
+                return modifiedUtf.readUTF();
+            }
+        } catch (java.io.UTFDataFormatException invalidModifiedUtf) {
+            throw new IOException("Invalid modified UTF-8 in NBT string", invalidModifiedUtf);
         }
     }
 
     private static void writeString(DataOutputStream data, String value) throws IOException {
-        byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
-        if (bytes.length > 65_535) {
-            throw new IOException("NBT string exceeds format limit");
+        try {
+            data.writeUTF(value);
+        } catch (java.io.UTFDataFormatException oversized) {
+            throw new IOException("NBT string exceeds modified UTF-8 format limit", oversized);
         }
-        data.writeShort(bytes.length);
-        data.write(bytes);
     }
 
     private static void requireType(byte type, boolean allowEnd) {

@@ -17,9 +17,11 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class NamespaceRepairService {
     private static final long DISK_MARGIN_BYTES = 64L * 1_024 * 1_024;
@@ -57,11 +59,72 @@ public final class NamespaceRepairService {
             NamespacePolicy policy,
             String registrySnapshotSha256
     ) throws IOException {
+        Result prepared = prepare(policy, registrySnapshotSha256);
+        if (!prepared.success() || metric(prepared.metrics(), "targets") == 0) {
+            return prepared;
+        }
+        return applyPrepared(
+                Path.of(prepared.jobPath()),
+                policy,
+                registrySnapshotSha256
+        );
+    }
+
+    /**
+     * Scans one signed world and creates byte-verified backups without replacing world files.
+     *
+     * <p>Separating preparation from apply lets the maintenance worker prepare every loaded
+     * Multiverse world first. A coverage gap in any world therefore refuses the entire world set
+     * before the first replacement.</p>
+     */
+    public Result prepare(
+            NamespacePolicy policy,
+            String registrySnapshotSha256
+    ) throws IOException {
         Path world = resolveWorld(authorizedWorld);
+        return prepare(
+                policy,
+                registrySnapshotSha256,
+                OrphanItemIndex.load(world, policy, nbtLimits)
+        );
+    }
+
+    public Result prepare(
+            NamespacePolicy policy,
+            String registrySnapshotSha256,
+            OrphanItemIndex itemIndex
+    ) throws IOException {
+        return prepare(
+                policy,
+                registrySnapshotSha256,
+                itemIndex,
+                NamespaceWorldScanner.Options.full(1, true)
+        );
+    }
+
+    public Result prepare(
+            NamespacePolicy policy,
+            String registrySnapshotSha256,
+            OrphanItemIndex itemIndex,
+            NamespaceWorldScanner.Options options
+    ) throws IOException {
+        Path world = resolveWorld(authorizedWorld);
+        if (options.trustedWorldLock()) {
+            WorldAccessPolicy.requireWorldLockHeldByThisWorker(world);
+        }
         Path jobsRoot = resolveJobsRoot(world, authorizedJobsRoot);
         String worldFingerprint = IoUtil.sha256(world.resolve("level.dat"));
-        NamespaceWorldScanner.Result scan = scanner.scan(world, policy);
         NamespaceJobStore store = NamespaceJobStore.create(jobsRoot);
+        NamespaceWorldScanner.ProgressListener externalProgress =
+                options.progressListener();
+        NamespaceWorldScanner.Options trackedOptions = options.withProgressListener(
+                progress -> {
+                    externalProgress.update(progress);
+                    store.writeScanProgress(progress);
+                }
+        );
+        NamespaceWorldScanner.Result scan =
+                scanner.scan(world, policy, itemIndex, trackedOptions);
         List<SourceFileRecord> sources = scan.affectedFiles().stream()
                 .map(file -> new SourceFileRecord(
                         file.relativePath(),
@@ -114,11 +177,7 @@ public final class NamespaceRepairService {
                             + " 个未覆盖/不可解析 region；已拒绝全部写入",
                     store.directory().toString(),
                     false,
-                    Map.of(
-                            "targets", scan.targets().size(),
-                            "coverageGaps", scan.coverageGaps().size(),
-                            "warnings", scan.warnings().size()
-                    )
+                    scanMetrics(scan, sources.size())
             );
         }
         if (scan.targets().isEmpty()) {
@@ -134,12 +193,7 @@ public final class NamespaceRepairService {
                     "未发现符合策略的可安全修复对象；世界未修改",
                     store.directory().toString(),
                     false,
-                    Map.of(
-                            "targets", 0,
-                            "regions", scan.regionsScanned(),
-                            "chunks", scan.chunksScanned(),
-                            "warnings", scan.warnings().size()
-                    )
+                    scanMetrics(scan, sources.size())
             );
         }
 
@@ -151,10 +205,104 @@ public final class NamespaceRepairService {
                 "all_source_backups_hash_verified"
         );
         store.writeManifest(prepared);
+        return new Result(
+                true,
+                false,
+                "Namespace targets scanned and all source backups byte-verified",
+                store.directory().toString(),
+                false,
+                scanMetrics(scan, sources.size())
+        );
+    }
+
+    /**
+     * Applies a previously prepared job after rechecking its exact target and source set.
+     */
+    public Result applyPrepared(
+            Path suppliedJob,
+            NamespacePolicy policy,
+            String registrySnapshotSha256
+    ) throws IOException {
+        Path world = resolveWorld(authorizedWorld);
+        return applyPrepared(
+                suppliedJob,
+                policy,
+                registrySnapshotSha256,
+                OrphanItemIndex.load(world, policy, nbtLimits)
+        );
+    }
+
+    public Result applyPrepared(
+            Path suppliedJob,
+            NamespacePolicy policy,
+            String registrySnapshotSha256,
+            OrphanItemIndex itemIndex
+    ) throws IOException {
+        return applyPrepared(
+                suppliedJob,
+                policy,
+                registrySnapshotSha256,
+                itemIndex,
+                NamespaceWorldScanner.Options.full(1, true)
+        );
+    }
+
+    public Result applyPrepared(
+            Path suppliedJob,
+            NamespacePolicy policy,
+            String registrySnapshotSha256,
+            OrphanItemIndex itemIndex,
+            NamespaceWorldScanner.Options options
+    ) throws IOException {
+        NamespaceJobStore store = NamespaceJobStore.open(suppliedJob);
+        NamespaceJobManifest prepared = store.readManifest();
+        if (prepared.state() != JobState.PREPARED) {
+            throw new IOException("Namespace apply requires a PREPARED job");
+        }
+        if (!prepared.namespace().equals(policy.namespace())
+                || prepared.mode() != policy.mode()
+                || !prepared.registrySnapshotSha256().equals(registrySnapshotSha256)) {
+            throw new IOException("Namespace prepared job policy does not match authorization");
+        }
+        Path world = resolveWorld(Path.of(prepared.worldRoot()));
+        if (options.trustedWorldLock()) {
+            WorldAccessPolicy.requireWorldLockHeldByThisWorker(world);
+        }
+        if (!IoUtil.sha256(world.resolve("level.dat")).equals(prepared.worldFingerprint())) {
+            throw new IOException("Namespace prepared world fingerprint changed");
+        }
+        List<NamespaceTarget> expectedTargets = store.readTargets();
+        List<SourceFileRecord> sources = store.readSources();
+        if (!options.trustedWorldLock()) {
+            NamespaceWorldScanner.Result current =
+                    scanner.scan(world, policy, itemIndex, options);
+            if (!current.coverageGaps().isEmpty()) {
+                throw new IOException("Namespace coverage changed after preparation");
+            }
+            if (!expectedTargets.equals(current.targets())
+                    || !sources.equals(sourceRecords(current))) {
+                throw new IOException(
+                        "Namespace targets or source hashes changed after preparation"
+                );
+            }
+        }
         try {
             List<SourceFileRecord> appliedSources =
-                    applyAll(world, store, prepared, policy, scan.targets(), sources);
-            NamespaceWorldScanner.Result verification = scanner.scan(world, policy);
+                    applyAll(
+                            world,
+                            store,
+                            prepared,
+                            policy,
+                            itemIndex,
+                            expectedTargets,
+                            sources
+                    );
+            NamespaceWorldScanner.Options verificationOptions =
+                    options.trustedWorldLock()
+                            ? verificationOptions(options, expectedTargets)
+                            : options;
+            NamespaceWorldScanner.Result verification =
+                    scanner.scan(world, policy, itemIndex, verificationOptions);
             verifyApplied(appliedSources, world, verification);
             NamespaceJobManifest verified = prepared.withState(
                     JobState.VERIFIED,
@@ -171,7 +319,7 @@ public final class NamespaceRepairService {
             ));
             store.appendLog(
                     "verify",
-                    "passed changed=" + scan.targets().size()
+                    "passed changed=" + expectedTargets.size()
                             + " files=" + appliedSources.size()
             );
             return new Result(
@@ -181,10 +329,13 @@ public final class NamespaceRepairService {
                     store.directory().toString(),
                     true,
                     Map.of(
-                            "changed", scan.targets().size(),
+                            "changed", expectedTargets.size(),
                             "files", appliedSources.size(),
-                            "byAction", scan.targetsByAction(),
-                            "warnings", scan.warnings().size()
+                            "byAction", targetsByAction(expectedTargets),
+                            "byNamespace", targetsByNamespace(expectedTargets),
+                            "byStore", targetsByStore(expectedTargets),
+                            "amountByNamespace", amountByNamespace(expectedTargets),
+                            "warnings", verification.warnings().size()
                     )
             );
         } catch (IOException | RuntimeException failure) {
@@ -255,6 +406,7 @@ public final class NamespaceRepairService {
             NamespaceJobStore store,
             NamespaceJobManifest manifest,
             NamespacePolicy policy,
+            OrphanItemIndex itemIndex,
             List<NamespaceTarget> targets,
             List<SourceFileRecord> initialSources
     ) throws IOException {
@@ -304,7 +456,13 @@ public final class NamespaceRepairService {
                             first.regionKind()
                     );
                     NamespaceChunkAdapter.Mutation mutation =
-                            adapter.mutate(root, context, policy, chunkTargets);
+                            adapter.mutate(
+                                    root,
+                                    context,
+                                    policy,
+                                    itemIndex,
+                                    chunkTargets
+                            );
                     return new RegionFile.EditResult(
                             true,
                             mutation.changed(),
@@ -324,7 +482,7 @@ public final class NamespaceRepairService {
                         temporary,
                         root -> {
                             if (!(root.tag() instanceof Nbt.CompoundTag compound)) {
-                                throw new IOException("Player NBT root is not a compound");
+                                throw new IOException("Standalone NBT root is not a compound");
                             }
                             NamespaceChunkAdapter.Context context =
                                     new NamespaceChunkAdapter.Context(
@@ -334,12 +492,13 @@ public final class NamespaceRepairService {
                                             -1,
                                             -1,
                                             false,
-                                            NamespaceTarget.RegionKind.PLAYER
+                                            first.regionKind()
                                     );
                             NamespaceChunkAdapter.Mutation mutation = adapter.mutate(
                                     compound,
                                     context,
                                     policy,
+                                    itemIndex,
                                     playerTargets
                             );
                             return new NbtFile.EditResult(
@@ -571,7 +730,8 @@ public final class NamespaceRepairService {
     }
 
     private static String storageRelativePath(NamespaceTarget target) {
-        if (target.regionKind() == NamespaceTarget.RegionKind.PLAYER) {
+        if (target.regionKind() == NamespaceTarget.RegionKind.PLAYER
+                || target.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA) {
             return target.regionRelativePath();
         }
         if (!target.externalChunk()) {
@@ -589,18 +749,180 @@ public final class NamespaceRepairService {
             NamespaceWorldScanner.Result scan,
             int sourceFiles
     ) {
+        List<NamespaceTarget> detected = detectedTargets(scan);
         LinkedHashMap<String, Object> report = new LinkedHashMap<>();
         report.put("namespace", policy.namespace());
         report.put("mode", policy.mode());
         report.put("regionsScanned", scan.regionsScanned());
         report.put("chunksScanned", scan.chunksScanned());
+        report.put("regionBytesScanned", scan.regionBytesScanned());
+        report.put("regionDataIncluded", scan.regionDataIncluded());
+        report.put("scanWorkers", scan.scanWorkers());
+        report.put("deferredTargets", scan.deferredTargets());
+        report.put(
+                "scopeComplete",
+                scan.regionDataIncluded() && scan.deferredTargets() == 0
+        );
         report.put("targets", scan.targets().size());
+        report.put("detectedTargets", detected.size());
         report.put("sourceFiles", sourceFiles);
         report.put("coverageGaps", scan.coverageGaps());
         report.put("warnings", scan.warnings());
         report.put("byAction", scan.targetsByAction());
+        if (policy.isGlobalItemCleanup()) {
+            report.put("byNamespace", targetsByNamespace(scan.targets()));
+            report.put("byStore", targetsByStore(scan.targets()));
+            report.put("amountByNamespace", amountByNamespace(scan.targets()));
+            report.put(
+                    "deferredByNamespace",
+                    targetsByNamespace(scan.deferredTargetDetails())
+            );
+            report.put(
+                    "deferredByStore",
+                    targetsByStore(scan.deferredTargetDetails())
+            );
+            report.put(
+                    "deferredAmountByNamespace",
+                    amountByNamespace(scan.deferredTargetDetails())
+            );
+            report.put("detectedByNamespace", targetsByNamespace(detected));
+            report.put("detectedByStore", targetsByStore(detected));
+            report.put("detectedAmountByNamespace", amountByNamespace(detected));
+        }
         report.put("unknownPrivateSchemasWereNotModified", true);
         return report;
+    }
+
+    private static Map<String, Object> scanMetrics(
+            NamespaceWorldScanner.Result scan,
+            int sourceFiles
+    ) {
+        List<NamespaceTarget> detected = detectedTargets(scan);
+        LinkedHashMap<String, Object> metrics = new LinkedHashMap<>();
+        metrics.put("targets", scan.targets().size());
+        metrics.put("detectedTargets", detected.size());
+        metrics.put("files", sourceFiles);
+        metrics.put("regions", scan.regionsScanned());
+        metrics.put("chunks", scan.chunksScanned());
+        metrics.put("regionBytes", scan.regionBytesScanned());
+        metrics.put("deferredTargets", scan.deferredTargets());
+        metrics.put("regionDataIncluded", scan.regionDataIncluded());
+        metrics.put("scanWorkers", scan.scanWorkers());
+        metrics.put("coverageGaps", scan.coverageGaps().size());
+        metrics.put("warnings", scan.warnings().size());
+        metrics.put("byNamespace", targetsByNamespace(scan.targets()));
+        metrics.put("byStore", targetsByStore(scan.targets()));
+        metrics.put("amountByNamespace", amountByNamespace(scan.targets()));
+        metrics.put(
+                "deferredByNamespace",
+                targetsByNamespace(scan.deferredTargetDetails())
+        );
+        metrics.put(
+                "deferredByStore",
+                targetsByStore(scan.deferredTargetDetails())
+        );
+        metrics.put(
+                "deferredAmountByNamespace",
+                amountByNamespace(scan.deferredTargetDetails())
+        );
+        metrics.put("detectedByNamespace", targetsByNamespace(detected));
+        metrics.put("detectedByStore", targetsByStore(detected));
+        metrics.put("detectedAmountByNamespace", amountByNamespace(detected));
+        return Map.copyOf(metrics);
+    }
+
+    private static List<NamespaceTarget> detectedTargets(
+            NamespaceWorldScanner.Result scan
+    ) {
+        ArrayList<NamespaceTarget> detected = new ArrayList<>(
+                scan.targets().size() + scan.deferredTargetDetails().size()
+        );
+        detected.addAll(scan.targets());
+        detected.addAll(scan.deferredTargetDetails());
+        return List.copyOf(detected);
+    }
+
+    private static Map<String, Integer> targetsByAction(
+            List<NamespaceTarget> targets
+    ) {
+        LinkedHashMap<String, Integer> result = new LinkedHashMap<>();
+        targets.stream()
+                .map(target -> target.action().name())
+                .sorted()
+                .forEach(action -> result.merge(action, 1, Integer::sum));
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Integer> targetsByNamespace(
+            List<NamespaceTarget> targets
+    ) {
+        LinkedHashMap<String, Integer> result = new LinkedHashMap<>();
+        targets.stream()
+                .map(NamespaceTarget::resourceId)
+                .map(id -> id.substring(0, id.indexOf(':')))
+                .sorted()
+                .forEach(namespace -> result.merge(namespace, 1, Integer::sum));
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Integer> targetsByStore(List<NamespaceTarget> targets) {
+        LinkedHashMap<String, Integer> result = new LinkedHashMap<>();
+        targets.stream()
+                .map(target -> target.store().name())
+                .sorted()
+                .forEach(store -> result.merge(store, 1, Integer::sum));
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Long> amountByNamespace(
+            List<NamespaceTarget> targets
+    ) {
+        LinkedHashMap<String, Long> result = new LinkedHashMap<>();
+        targets.stream()
+                .filter(target -> target.amount() > 0)
+                .sorted(Comparator.comparing(NamespaceTarget::resourceId))
+                .forEach(target -> {
+                    String id = target.resourceId();
+                    String namespace = id.substring(0, id.indexOf(':'));
+                    result.merge(namespace, target.amount(), Math::addExact);
+                });
+        return Map.copyOf(result);
+    }
+
+    private static List<SourceFileRecord> sourceRecords(
+            NamespaceWorldScanner.Result scan
+    ) {
+        return scan.affectedFiles().stream()
+                .map(file -> new SourceFileRecord(
+                        file.relativePath(),
+                        file.size(),
+                        file.sha256(),
+                        file.relativePath(),
+                        null
+                ))
+                .toList();
+    }
+
+    private static NamespaceWorldScanner.Options verificationOptions(
+            NamespaceWorldScanner.Options options,
+            List<NamespaceTarget> targets
+    ) {
+        Set<String> regionFiles = new HashSet<>();
+        Set<String> standaloneFiles = new HashSet<>();
+        for (NamespaceTarget target : targets) {
+            if (target.regionKind() == NamespaceTarget.RegionKind.PLAYER
+                    || target.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA) {
+                standaloneFiles.add(target.regionRelativePath());
+            } else {
+                regionFiles.add(target.regionRelativePath());
+            }
+        }
+        return options.selecting(regionFiles, standaloneFiles);
+    }
+
+    private static int metric(Map<String, ?> metrics, String name) {
+        Object value = metrics.get(name);
+        return value instanceof Number number ? number.intValue() : 0;
     }
 
     private static Map<String, Object> event(

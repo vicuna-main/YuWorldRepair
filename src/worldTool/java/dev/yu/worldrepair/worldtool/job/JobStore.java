@@ -40,7 +40,7 @@ public final class JobStore {
     public static final long MAX_TARGETS_FILE_BYTES = 64L * 1_024 * 1_024;
     public static final long MAX_JOURNAL_BYTES = 32L * 1_024 * 1_024;
     public static final long MAX_TOOL_LOG_BYTES = 4L * 1_024 * 1_024;
-    public static final long MAX_BACKUP_BYTES = 64L * 1_024 * 1_024 * 1_024;
+    public static final long MAX_BACKUP_BYTES = 512L * 1_024 * 1_024 * 1_024;
 
     private static final DateTimeFormatter JOB_TIME =
             DateTimeFormatter.ofPattern("uuuuMMdd-HHmmss").withZone(ZoneOffset.UTC);

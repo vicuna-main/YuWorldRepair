@@ -7,8 +7,11 @@ import dev.yu.worldrepair.worldtool.adapter.LegacyChickenDataAdapter;
 import dev.yu.worldrepair.worldtool.io.IoUtil;
 import dev.yu.worldrepair.worldtool.io.WorldAccessPolicy;
 import dev.yu.worldrepair.worldtool.maintenance.MaintenanceFiles;
+import dev.yu.worldrepair.worldtool.maintenance.MaintenanceHandoff;
 import dev.yu.worldrepair.worldtool.maintenance.MaintenanceRequest;
+import dev.yu.worldrepair.worldtool.maintenance.MaintenanceRegionScope;
 import dev.yu.worldrepair.worldtool.maintenance.MaintenanceResult;
+import dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorldRoots;
 import dev.yu.worldrepair.worldtool.maintenance.RegistrySnapshot;
 import dev.yu.worldrepair.worldtool.namespace.NamespacePolicy;
 import net.minecraft.ChatFormatting;
@@ -55,6 +58,7 @@ final class MaintenanceController {
     private static final String WORKER_AUTH_ENV = "YUWORLDREPAIR_MAINTENANCE_AUTH";
     private static final long MAX_EMBEDDED_WORKER_BYTES = 16L * 1_024 * 1_024;
     private static final long CONFIRM_TTL_MILLIS = TimeUnit.MINUTES.toMillis(2);
+    private static final long WORKER_READY_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(10);
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Path gameDirectory;
@@ -90,6 +94,12 @@ final class MaintenanceController {
                         : "；job=" + startupResult.jobPath())
         );
         event.getServer().sendSystemMessage(message);
+        String metrics = formatItemMetrics(startupResult.metrics());
+        if (!metrics.isEmpty()) {
+            event.getServer().sendSystemMessage(Component.literal(
+                    "[YuWorldRepair] 问题物品统计: " + metrics
+            ));
+        }
         YuWorldRepair.LOGGER.info(
                 "Maintenance result request={} state={} success={} detail={} job={}",
                 startupResult.requestId(),
@@ -130,17 +140,63 @@ final class MaintenanceController {
         dispatcher.register(Commands.literal("yuworldrepair")
                 .then(Commands.literal("repair")
                         .requires(source -> source.hasPermission(4))
-                        .then(Commands.literal("iceandfire-chicken-data")
-                                .executes(context -> requestRepair(context.getSource())))
+                        .then(Commands.literal("iceandfire")
+                                .executes(context -> requestNamespaceRepair(
+                                         context.getSource(),
+                                         "iceandfire",
+                                         NamespacePolicy.Mode.PREPARE_REMOVE,
+                                         MaintenanceRegionScope.Mode.ALL,
+                                         null
+                                 )))
+                        .then(Commands.literal("orphaned-items")
+                                .executes(context -> requestNamespaceRepair(
+                                        context.getSource(),
+                                        NamespacePolicy.ALL_ORPHANED_ITEMS,
+                                        NamespacePolicy.Mode.ORPHANED_ITEMS,
+                                        MaintenanceRegionScope.Mode.ALL,
+                                        null
+                                ))
+                                .then(Commands.literal("only")
+                                        .then(Commands.argument(
+                                                        "worlds",
+                                                        StringArgumentType.greedyString()
+                                                )
+                                                .executes(context -> requestNamespaceRepair(
+                                                        context.getSource(),
+                                                        NamespacePolicy.ALL_ORPHANED_ITEMS,
+                                                        NamespacePolicy.Mode.ORPHANED_ITEMS,
+                                                        MaintenanceRegionScope.Mode.ONLY,
+                                                        StringArgumentType.getString(
+                                                                context,
+                                                                "worlds"
+                                                        )
+                                                ))))
+                                .then(Commands.literal("except")
+                                        .then(Commands.argument(
+                                                        "worlds",
+                                                        StringArgumentType.greedyString()
+                                                )
+                                                .executes(context -> requestNamespaceRepair(
+                                                        context.getSource(),
+                                                        NamespacePolicy.ALL_ORPHANED_ITEMS,
+                                                        NamespacePolicy.Mode.ORPHANED_ITEMS,
+                                                        MaintenanceRegionScope.Mode.EXCEPT,
+                                                        StringArgumentType.getString(
+                                                                context,
+                                                                "worlds"
+                                                        )
+                                                )))))
                         .then(Commands.literal("orphaned")
                                 .then(Commands.argument("namespace", StringArgumentType.word())
                                         .executes(context -> requestNamespaceRepair(
-                                                context.getSource(),
-                                                StringArgumentType.getString(
+                                         context.getSource(),
+                                         StringArgumentType.getString(
                                                         context,
                                                         "namespace"
-                                                ),
-                                                NamespacePolicy.Mode.ORPHANED_ONLY
+                                         ),
+                                                 NamespacePolicy.Mode.ORPHANED_ONLY,
+                                                 MaintenanceRegionScope.Mode.ALL,
+                                                 null
                                         ))))
                         .then(Commands.literal("prepare-remove")
                                 .then(Commands.argument("namespace", StringArgumentType.word())
@@ -149,8 +205,10 @@ final class MaintenanceController {
                                                 StringArgumentType.getString(
                                                         context,
                                                         "namespace"
-                                                ),
-                                                NamespacePolicy.Mode.PREPARE_REMOVE
+                                                 ),
+                                                 NamespacePolicy.Mode.PREPARE_REMOVE,
+                                                 MaintenanceRegionScope.Mode.ALL,
+                                                 null
                                         ))))
                         .then(Commands.literal("rollback")
                                 .executes(context -> requestRollback(context.getSource())))
@@ -179,6 +237,8 @@ final class MaintenanceController {
                     null,
                     null,
                     null,
+                    null,
+                    MaintenanceRegionScope.Mode.ALL,
                     null
             );
         } catch (IOException failure) {
@@ -192,7 +252,9 @@ final class MaintenanceController {
     private int requestNamespaceRepair(
             CommandSourceStack source,
             String suppliedNamespace,
-            NamespacePolicy.Mode mode
+            NamespacePolicy.Mode mode,
+            MaintenanceRegionScope.Mode scopeMode,
+            String scopeNames
     ) {
         if (!preflightSource(source)) {
             return 0;
@@ -216,7 +278,9 @@ final class MaintenanceController {
                     null,
                     namespace,
                     mode,
-                    snapshot
+                    snapshot,
+                    scopeMode,
+                    scopeNames
             );
         } catch (IOException | IllegalArgumentException failure) {
             source.sendFailure(Component.literal(
@@ -241,6 +305,8 @@ final class MaintenanceController {
                     candidate.jobPath(),
                     null,
                     null,
+                    null,
+                    MaintenanceRegionScope.Mode.ALL,
                     null
             );
         } catch (IOException failure) {
@@ -264,6 +330,15 @@ final class MaintenanceController {
             source.sendFailure(Component.literal("已有待确认或倒计时中的维护请求"));
             return false;
         }
+        if ((config.restartStrategy() == MaintenanceRequest.RestartStrategy.PANEL
+                || config.restartStrategy() == MaintenanceRequest.RestartStrategy.SUPERVISOR)
+                && !hasSupervisorEnvironment()) {
+            source.sendFailure(Component.literal(
+                    "Panel maintenance is unavailable because the server was not started through "
+                            + "the executable YuWorldRepair maintenance JAR"
+            ));
+            return false;
+        }
         return true;
     }
 
@@ -274,13 +349,27 @@ final class MaintenanceController {
             String jobPath,
             String namespace,
             NamespacePolicy.Mode namespaceMode,
-            RegistrySnapshot registrySnapshot
+            RegistrySnapshot registrySnapshot,
+            MaintenanceRegionScope.Mode scopeMode,
+            String scopeNames
     ) throws IOException {
         MinecraftServer server = source.getServer();
         Path world = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();
+        List<Path> loadedWorldRoots = MaintenanceWorldRoots.capture(
+                gameDirectory,
+                world,
+                server.getAllLevels()
+        );
+        world = loadedWorldRoots.getFirst();
+        MaintenanceRegionScope.Selection regionScope = MaintenanceRegionScope.resolve(
+                gameDirectory,
+                loadedWorldRoots,
+                scopeMode,
+                scopeNames
+        );
         Path jobs = MaintenanceHistory.jobsRoot(gameDirectory);
         Path workerJar = findMaintenanceJar();
-        requireOutsideWorld(world, jobs);
+        requireOutsideWorld(loadedWorldRoots, jobs);
         String requestId = UUID.randomUUID().toString();
         String secret = randomHex(32);
         String confirmToken = randomHex(16);
@@ -309,6 +398,9 @@ final class MaintenanceController {
                 operation,
                 gameDirectory.toString(),
                 world.toString(),
+                loadedWorldRoots.stream().map(Path::toString).toList(),
+                regionScope.excludedRegionRoots().stream().map(Path::toString).toList(),
+                config.effectiveScanWorkers(),
                 jobs.toString(),
                 iceJar == null ? null : iceJar.toString(),
                 jobPath,
@@ -350,6 +442,12 @@ final class MaintenanceController {
                         )));
         source.sendSuccess(() -> Component.literal(
                 "已创建 " + operation + " 请求。确认后将保存世界、断开玩家并停服；"
+                        + "已绑定 " + loadedWorldRoots.size() + " 个已加载世界目录；"
+                        + (regionScope.excludedLabels().isEmpty()
+                        ? "全部世界区块都会扫描；"
+                        : "只跳过这些世界的区块文件 " + regionScope.excludedLabels()
+                        + "，其 playerdata/SavedData 仍扫描；")
+                        + "扫描线程=" + config.effectiveScanWorkers() + "；"
                         + "所有写入只会在 session.lock 释放后进行。"
         ), false);
         source.sendSuccess(() -> clickable, false);
@@ -461,6 +559,7 @@ final class MaintenanceController {
                             + ", success=" + result.success()
                             + ", rollbackAvailable=" + result.rollbackAvailable()
                             + ", detail=" + result.detail()
+                            + formatItemMetricsSuffix(result.metrics())
             ), false);
             return 1;
         } catch (IOException failure) {
@@ -561,15 +660,83 @@ final class MaintenanceController {
                 active.authorizationSecret()
         );
         Process worker = builder.start();
-        if (!worker.isAlive()) {
-            throw new IOException("Maintenance worker exited before shutdown handoff");
+        try {
+            awaitWorkerReady(active, worker);
+        } catch (IOException failure) {
+            worker.destroy();
+            try {
+                if (!worker.waitFor(2, TimeUnit.SECONDS)) {
+                    worker.destroyForcibly();
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                failure.addSuppressed(interrupted);
+                worker.destroyForcibly();
+            }
+            throw failure;
         }
         YuWorldRepair.LOGGER.info(
-                "Maintenance worker pid={} request={} operation={}",
+                "Maintenance worker ready pid={} request={} operation={} restartStrategy={}",
                 worker.pid(),
                 active.request().requestId(),
-                active.request().operation()
+                active.request().operation(),
+                active.request().restartStrategy()
         );
+    }
+
+    private static void awaitWorkerReady(Pending active, Process worker) throws IOException {
+        Path handoffPath = active.requestPath().resolveSibling(MaintenanceFiles.HANDOFF_FILE);
+        Path resultPath = active.requestPath().resolveSibling(MaintenanceFiles.RESULT_FILE);
+        long deadline = System.currentTimeMillis() + WORKER_READY_TIMEOUT_MILLIS;
+        while (System.currentTimeMillis() < deadline) {
+            if (Files.isRegularFile(handoffPath, LinkOption.NOFOLLOW_LINKS)) {
+                MaintenanceHandoff handoff = MaintenanceFiles.readHandoff(handoffPath);
+                String expectedSupervisor = System.getenv(
+                        MaintenanceHandoff.SUPERVISOR_ID_ENV
+                );
+                boolean supervisorMismatch =
+                        (active.request().restartStrategy()
+                                == MaintenanceRequest.RestartStrategy.PANEL
+                                || active.request().restartStrategy()
+                                == MaintenanceRequest.RestartStrategy.SUPERVISOR)
+                                && !java.util.Objects.equals(
+                                handoff.supervisorId(),
+                                expectedSupervisor
+                        );
+                if (!handoff.requestId().equals(active.request().requestId())
+                        || handoff.serverPid() != active.request().parentPid()
+                        || handoff.workerPid() != worker.pid()
+                        || handoff.state() != MaintenanceRequest.State.WAITING_FOR_STOP
+                        || supervisorMismatch) {
+                    throw new IOException("Maintenance worker readiness handoff is inconsistent");
+                }
+                return;
+            }
+            if (Files.isRegularFile(resultPath, LinkOption.NOFOLLOW_LINKS)) {
+                MaintenanceResult result = MaintenanceFiles.readResult(resultPath);
+                throw new IOException(
+                        "Maintenance worker failed before shutdown readiness: " + result.detail()
+                );
+            }
+            if (!worker.isAlive()) {
+                throw new IOException("Maintenance worker exited before shutdown readiness");
+            }
+            try {
+                TimeUnit.MILLISECONDS.sleep(50);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException(
+                        "Interrupted while waiting for maintenance worker readiness",
+                        interrupted
+                );
+            }
+        }
+        throw new IOException("Maintenance worker did not acknowledge shutdown readiness");
+    }
+
+    private static boolean hasSupervisorEnvironment() {
+        String supervisorId = System.getenv(MaintenanceHandoff.SUPERVISOR_ID_ENV);
+        return supervisorId != null && supervisorId.matches("[0-9a-f]{64}");
     }
 
     private static Path extractWorker(Pending active) throws IOException {
@@ -689,9 +856,11 @@ final class MaintenanceController {
         }
     }
 
-    private static void requireOutsideWorld(Path world, Path jobs) throws IOException {
-        if (jobs.startsWith(world)) {
-            throw new IOException("维护 job/备份目录必须位于世界目录之外");
+    private static void requireOutsideWorld(List<Path> worlds, Path jobs) throws IOException {
+        for (Path world : worlds) {
+            if (jobs.startsWith(world)) {
+                throw new IOException("维护 job/备份目录必须位于世界目录之外");
+            }
         }
     }
 
@@ -744,6 +913,48 @@ final class MaintenanceController {
         }
         String oneLine = message.replace('\r', ' ').replace('\n', ' ');
         return oneLine.length() <= 1_024 ? oneLine : oneLine.substring(0, 1_024);
+    }
+
+    private static String formatItemMetricsSuffix(java.util.Map<String, ?> metrics) {
+        String formatted = formatItemMetrics(metrics);
+        return formatted.isEmpty() ? "" : ", itemStats=" + formatted;
+    }
+
+    private static String formatItemMetrics(java.util.Map<String, ?> metrics) {
+        if (metrics == null || !metrics.containsKey("byNamespace")) {
+            return "";
+        }
+        if (metrics.containsKey("detectedByNamespace")) {
+            String value = "detectedEntries=" + metrics.get("detectedTargets")
+                    + ", detectedByMod=" + metrics.get("detectedByNamespace")
+                    + ", removedEntries=" + metrics.get("removedTargets")
+                    + ", removedByMod=" + metrics.get("byNamespace")
+                    + ", removedByStore=" + metrics.get("byStore")
+                    + ", removedAmounts=" + metrics.get("amountByNamespace")
+                    + ", deferredEntries=" + metrics.get("deferredTargets")
+                    + ", deferredByMod=" + metrics.get("deferredByNamespace")
+                    + ", deferredByStore=" + metrics.get("deferredByStore")
+                    + ", deferredAmounts=" + metrics.get("deferredAmountByNamespace")
+                    + ", cleanupComplete=" + metrics.get("cleanupComplete")
+                    + ", regionScopeComplete=" + metrics.get("regionScopeComplete")
+                    + ", excludedWorldRegions=" + metrics.get("regionExcludedWorlds")
+                    + ", scanWorkers=" + metrics.get("scanWorkers");
+            return value.length() <= 2_048 ? value : value.substring(0, 2_048);
+        }
+        String value = "entries=" + metrics.get("targets")
+                + ", byMod=" + metrics.get("byNamespace")
+                + ", byStore=" + metrics.get("byStore")
+                + ", amounts=" + metrics.get("amountByNamespace")
+                + (metrics.containsKey("regionScopeComplete")
+                ? ", regionScopeComplete=" + metrics.get("regionScopeComplete")
+                 + ", excludedWorldRegions=" + metrics.get("regionExcludedWorlds")
+                 + ", qioDeferred=" + metrics.get("deferredTargets")
+                 + ", deferredByMod=" + metrics.get("deferredByNamespace")
+                 + ", deferredByStore=" + metrics.get("deferredByStore")
+                 + ", deferredAmounts=" + metrics.get("deferredAmountByNamespace")
+                 + ", scanWorkers=" + metrics.get("scanWorkers")
+                : "");
+        return value.length() <= 2_048 ? value : value.substring(0, 2_048);
     }
 
     private record Pending(

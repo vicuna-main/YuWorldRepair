@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
@@ -14,6 +15,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,6 +48,28 @@ class NbtAndRegionSafetyTest {
         );
         assertEquals("root", reread.name());
         assertEquals(Nbt.semanticSha256(compound), Nbt.semanticSha256(reread.tag()));
+    }
+
+    @Test
+    void minecraftModifiedUtf8StringsRoundTripIncludingNullAndSupplementaryCharacters()
+            throws Exception {
+        String value = "player\u0000\uD83D\uDE80";
+        ByteArrayOutputStream minecraftBytes = new ByteArrayOutputStream();
+        try (DataOutputStream data = new DataOutputStream(minecraftBytes)) {
+            data.writeByte(Nbt.STRING);
+            data.writeUTF("");
+            data.writeUTF(value);
+        }
+
+        Nbt.Root decoded = Nbt.readRoot(
+                new ByteArrayInputStream(minecraftBytes.toByteArray()),
+                Nbt.Limits.conservative()
+        );
+        assertEquals(value, ((Nbt.StringTag) decoded.tag()).value());
+        assertArrayEquals(
+                minecraftBytes.toByteArray(),
+                Nbt.writeRootToBytes(decoded)
+        );
     }
 
     @Test

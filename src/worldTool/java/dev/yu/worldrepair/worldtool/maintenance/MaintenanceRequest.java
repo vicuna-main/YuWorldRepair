@@ -22,6 +22,9 @@ public record MaintenanceRequest(
         Operation operation,
         String serverRoot,
         String worldRoot,
+        List<String> worldRoots,
+        List<String> regionExcludedWorldRoots,
+        int scanWorkers,
         String jobsRoot,
         String iceAndFireJar,
         String jobPath,
@@ -37,10 +40,142 @@ public record MaintenanceRequest(
         State state,
         String detail
 ) {
-    public static final int SCHEMA_VERSION = 3;
+    public static final int SCHEMA_VERSION = 5;
+    private static final int MULTI_WORLD_SCHEMA_VERSION = 4;
+    private static final int SINGLE_WORLD_SCHEMA_VERSION = 3;
 
     public MaintenanceRequest {
+        worldRoots = worldRoots == null
+                ? (worldRoot == null ? List.of() : List.of(worldRoot))
+                : List.copyOf(worldRoots);
+        regionExcludedWorldRoots = regionExcludedWorldRoots == null
+                ? List.of()
+                : List.copyOf(regionExcludedWorldRoots);
+        if (schemaVersion < SCHEMA_VERSION && scanWorkers == 0) {
+            scanWorkers = 1;
+        }
         restartCommand = restartCommand == null ? List.of() : List.copyOf(restartCommand);
+    }
+
+    /**
+     * Source-compatible constructor for single-world callers and older tests.
+     */
+    public MaintenanceRequest(
+            int schemaVersion,
+            String requestId,
+            String authorizationSha256,
+            String bindingHmacSha256,
+            String createdAt,
+            String expiresAt,
+            long parentPid,
+            Operation operation,
+            String serverRoot,
+            String worldRoot,
+            String jobsRoot,
+            String iceAndFireJar,
+            String jobPath,
+            String namespace,
+            NamespacePolicy.Mode namespaceMode,
+            String registrySnapshotPath,
+            String registrySnapshotSha256,
+            String minecraftVersion,
+            String neoForgeVersion,
+            String youerVersion,
+            RestartStrategy restartStrategy,
+            List<String> restartCommand,
+            State state,
+            String detail
+    ) {
+        this(
+                schemaVersion,
+                requestId,
+                authorizationSha256,
+                bindingHmacSha256,
+                createdAt,
+                expiresAt,
+                parentPid,
+                operation,
+                serverRoot,
+                worldRoot,
+                worldRoot == null ? List.of() : List.of(worldRoot),
+                List.of(),
+                1,
+                jobsRoot,
+                iceAndFireJar,
+                jobPath,
+                namespace,
+                namespaceMode,
+                registrySnapshotPath,
+                registrySnapshotSha256,
+                minecraftVersion,
+                neoForgeVersion,
+                youerVersion,
+                restartStrategy,
+                restartCommand,
+                state,
+                detail
+        );
+    }
+
+    /**
+     * Source-compatible constructor for schema-four multi-world callers.
+     */
+    public MaintenanceRequest(
+            int schemaVersion,
+            String requestId,
+            String authorizationSha256,
+            String bindingHmacSha256,
+            String createdAt,
+            String expiresAt,
+            long parentPid,
+            Operation operation,
+            String serverRoot,
+            String worldRoot,
+            List<String> worldRoots,
+            String jobsRoot,
+            String iceAndFireJar,
+            String jobPath,
+            String namespace,
+            NamespacePolicy.Mode namespaceMode,
+            String registrySnapshotPath,
+            String registrySnapshotSha256,
+            String minecraftVersion,
+            String neoForgeVersion,
+            String youerVersion,
+            RestartStrategy restartStrategy,
+            List<String> restartCommand,
+            State state,
+            String detail
+    ) {
+        this(
+                schemaVersion,
+                requestId,
+                authorizationSha256,
+                bindingHmacSha256,
+                createdAt,
+                expiresAt,
+                parentPid,
+                operation,
+                serverRoot,
+                worldRoot,
+                worldRoots,
+                List.of(),
+                1,
+                jobsRoot,
+                iceAndFireJar,
+                jobPath,
+                namespace,
+                namespaceMode,
+                registrySnapshotPath,
+                registrySnapshotSha256,
+                minecraftVersion,
+                neoForgeVersion,
+                youerVersion,
+                restartStrategy,
+                restartCommand,
+                state,
+                detail
+        );
     }
 
     public MaintenanceRequest withState(State next, String nextDetail) {
@@ -55,6 +190,9 @@ public record MaintenanceRequest(
                 operation,
                 serverRoot,
                 worldRoot,
+                worldRoots,
+                regionExcludedWorldRoots,
+                scanWorkers,
                 jobsRoot,
                 iceAndFireJar,
                 jobPath,
@@ -84,9 +222,44 @@ public record MaintenanceRequest(
                 operation,
                 serverRoot,
                 worldRoot,
+                worldRoots,
+                regionExcludedWorldRoots,
+                scanWorkers,
                 jobsRoot,
                 iceAndFireJar,
                 nextJobPath,
+                namespace,
+                namespaceMode,
+                registrySnapshotPath,
+                registrySnapshotSha256,
+                minecraftVersion,
+                neoForgeVersion,
+                youerVersion,
+                restartStrategy,
+                restartCommand,
+                state,
+                detail
+        );
+    }
+
+    public MaintenanceRequest withWorldRoots(List<String> nextWorldRoots) {
+        return new MaintenanceRequest(
+                schemaVersion,
+                requestId,
+                authorizationSha256,
+                bindingHmacSha256,
+                createdAt,
+                expiresAt,
+                parentPid,
+                operation,
+                serverRoot,
+                worldRoot,
+                nextWorldRoots,
+                regionExcludedWorldRoots,
+                scanWorkers,
+                jobsRoot,
+                iceAndFireJar,
+                jobPath,
                 namespace,
                 namespaceMode,
                 registrySnapshotPath,
@@ -113,6 +286,9 @@ public record MaintenanceRequest(
                 operation,
                 serverRoot,
                 worldRoot,
+                worldRoots,
+                regionExcludedWorldRoots,
+                scanWorkers,
                 jobsRoot,
                 iceAndFireJar,
                 jobPath,
@@ -173,7 +349,9 @@ public record MaintenanceRequest(
     }
 
     private void validateStructure() {
-        if (schemaVersion != SCHEMA_VERSION
+        if ((schemaVersion != SINGLE_WORLD_SCHEMA_VERSION
+                && schemaVersion != MULTI_WORLD_SCHEMA_VERSION
+                && schemaVersion != SCHEMA_VERSION)
                 || requestId == null
                 || !requestId.matches("[0-9a-fA-F-]{36}")
                 || authorizationSha256 == null
@@ -188,6 +366,52 @@ public record MaintenanceRequest(
         }
         requirePath(serverRoot, "serverRoot");
         requirePath(worldRoot, "worldRoot");
+        if (worldRoots.isEmpty()
+                || worldRoots.size() > MaintenanceWorldRoots.MAX_WORLD_ROOTS
+                || !worldRoot.equals(worldRoots.getFirst())
+                || worldRoots.stream().anyMatch(value -> {
+                    try {
+                        requirePath(value, "worldRoots");
+                        return false;
+                    } catch (IllegalArgumentException invalid) {
+                        return true;
+                    }
+                })
+                || new java.util.HashSet<>(worldRoots).size() != worldRoots.size()) {
+            throw new IllegalArgumentException("Maintenance world root set is invalid");
+        }
+        if (schemaVersion == SINGLE_WORLD_SCHEMA_VERSION
+                && !worldRoots.equals(List.of(worldRoot))) {
+            throw new IllegalArgumentException(
+                    "Legacy maintenance request must bind exactly one world root"
+            );
+        }
+        if (regionExcludedWorldRoots.size() > worldRoots.size()
+                || new java.util.HashSet<>(regionExcludedWorldRoots).size()
+                != regionExcludedWorldRoots.size()
+                || !new java.util.HashSet<>(worldRoots).containsAll(regionExcludedWorldRoots)
+                || regionExcludedWorldRoots.stream().anyMatch(value -> {
+                    try {
+                        requirePath(value, "regionExcludedWorldRoots");
+                        return false;
+                    } catch (IllegalArgumentException invalid) {
+                        return true;
+                    }
+                })
+                || scanWorkers < 1
+                || scanWorkers > 16) {
+            throw new IllegalArgumentException("Maintenance region scope is invalid");
+        }
+        if (schemaVersion < SCHEMA_VERSION && !regionExcludedWorldRoots.isEmpty()) {
+            throw new IllegalArgumentException("Legacy maintenance request cannot exclude regions");
+        }
+        if (!regionExcludedWorldRoots.isEmpty()
+                && (operation != Operation.NAMESPACE_REPAIR
+                || namespaceMode != NamespacePolicy.Mode.ORPHANED_ITEMS)) {
+            throw new IllegalArgumentException(
+                    "Region exclusions are only valid for global orphan-item cleanup"
+            );
+        }
         requirePath(jobsRoot, "jobsRoot");
         if (operation == Operation.REPAIR) {
             requirePath(iceAndFireJar, "iceAndFireJar");
@@ -202,6 +426,8 @@ public record MaintenanceRequest(
                     || namespace.equals("neoforge")
                     || namespace.equals("forge")
                     || namespaceMode == null
+                    || (namespaceMode == NamespacePolicy.Mode.ORPHANED_ITEMS)
+                    != NamespacePolicy.ALL_ORPHANED_ITEMS.equals(namespace)
                     || registrySnapshotSha256 == null
                     || !registrySnapshotSha256.matches("[0-9a-f]{64}")) {
                 throw new IllegalArgumentException("Namespace repair authorization is invalid");
@@ -251,6 +477,19 @@ public record MaintenanceRequest(
         append(binding, operation == null ? null : operation.name());
         append(binding, serverRoot);
         append(binding, worldRoot);
+        if (schemaVersion >= MULTI_WORLD_SCHEMA_VERSION) {
+            binding.append(worldRoots.size()).append(':');
+            for (String root : worldRoots) {
+                append(binding, root);
+            }
+        }
+        if (schemaVersion >= SCHEMA_VERSION) {
+            binding.append(regionExcludedWorldRoots.size()).append(':');
+            for (String root : regionExcludedWorldRoots) {
+                append(binding, root);
+            }
+            append(binding, Integer.toString(scanWorkers));
+        }
         append(binding, jobsRoot);
         append(binding, iceAndFireJar);
         append(binding, operation == Operation.ROLLBACK ? jobPath : null);
@@ -294,6 +533,7 @@ public record MaintenanceRequest(
 
     public enum RestartStrategy {
         PANEL,
+        SUPERVISOR,
         SELF,
         NONE
     }

@@ -28,10 +28,10 @@ import java.util.Set;
 
 public final class NamespaceJobStore {
     public static final String MANIFEST_FILE = "namespace-manifest.json";
-    public static final long MAX_BACKUP_BYTES = 64L * 1_024 * 1_024 * 1_024;
-    private static final long MAX_JSON_BYTES = 64L * 1_024 * 1_024;
+    public static final long MAX_BACKUP_BYTES = 512L * 1_024 * 1_024 * 1_024;
+    private static final long MAX_JSON_BYTES = 256L * 1_024 * 1_024;
     private static final long MAX_LOG_BYTES = 32L * 1_024 * 1_024;
-    private static final int MAX_SOURCE_FILES = 32_768;
+    private static final int MAX_SOURCE_FILES = NamespaceWorldScanner.MAX_TARGETS;
     private static final int MAX_JSON_LINE_BYTES = 65_536;
     private static final DateTimeFormatter JOB_TIME =
             DateTimeFormatter.ofPattern("uuuuMMdd-HHmmss").withZone(ZoneOffset.UTC);
@@ -190,6 +190,20 @@ public final class NamespaceJobStore {
         IoUtil.writeAtomicUtf8(directory.resolve(name), PRETTY.toJson(report) + "\n");
     }
 
+    public void writeScanProgress(NamespaceWorldScanner.Progress progress) throws IOException {
+        writeReport("scan-progress.json", Map.of(
+                "regionFilesCompleted", progress.regionFilesCompleted(),
+                "regionFilesTotal", progress.regionFilesTotal(),
+                "regionBytesCompleted", progress.regionBytesCompleted(),
+                "regionBytesTotal", progress.regionBytesTotal(),
+                "chunksScanned", progress.chunksScanned(),
+                "targetsFound", progress.targetsFound(),
+                "coverageGaps", progress.coverageGaps(),
+                "elapsedMillis", progress.elapsedMillis(),
+                "updatedAt", Instant.now().toString()
+        ));
+    }
+
     public void appendJournal(Map<String, ?> event) throws IOException {
         String line = COMPACT.toJson(event) + "\n";
         if (line.getBytes(StandardCharsets.UTF_8).length > MAX_JSON_LINE_BYTES) {
@@ -247,14 +261,19 @@ public final class NamespaceJobStore {
             boolean sidecar = source != null && source.relativePath().endsWith(".mcc");
             boolean player = source != null
                     && source.relativePath().matches("playerdata/[0-9a-fA-F-]{36}\\.dat");
+            boolean savedData = source != null
+                    && (source.relativePath().equals(OrphanItemIndex.QIO_CACHE_PATH)
+                    || source.relativePath().equals(
+                    "data/refinedstorage_storages.dat"
+            ));
             if (source == null
                     || !validRelative(source.relativePath())
-                    || !(region || sidecar || player)
+                    || !(region || sidecar || player || savedData)
                     || !source.relativePath().equals(source.backupRelativePath())
                     || source.size() < (region ? 8_192 : 1)
                     || source.size() > (region
                     ? 2L * 1_024 * 1_024 * 1_024
-                    : player
+                    : player || savedData
                     ? NbtFile.MAX_COMPRESSED_BYTES
                     : RegionFile.MAX_EXTERNAL_CHUNK_BYTES)
                     || !sha256(source.preSha256())
@@ -282,11 +301,18 @@ public final class NamespaceJobStore {
                 || target.regionKind() == NamespaceTarget.RegionKind.PLAYER
                 && !target.regionRelativePath()
                 .matches("playerdata/[0-9a-fA-F-]{36}\\.dat")
+                || target.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA
+                && !(target.regionRelativePath().equals(OrphanItemIndex.QIO_CACHE_PATH)
+                || target.regionRelativePath()
+                .equals("data/refinedstorage_storages.dat"))
                 || target.regionKind() != NamespaceTarget.RegionKind.PLAYER
+                && target.regionKind() != NamespaceTarget.RegionKind.SAVED_DATA
                 && !target.regionRelativePath().endsWith(".mca")
-                || target.regionKind() == NamespaceTarget.RegionKind.PLAYER
+                || (target.regionKind() == NamespaceTarget.RegionKind.PLAYER
+                || target.regionKind() == NamespaceTarget.RegionKind.SAVED_DATA)
                 && target.chunkIndex() != -1
                 || target.regionKind() != NamespaceTarget.RegionKind.PLAYER
+                && target.regionKind() != NamespaceTarget.RegionKind.SAVED_DATA
                 && (target.chunkIndex() < 0
                 || target.chunkIndex() >= RegionFile.CHUNK_SLOTS)
                 || target.regionKind() == null
@@ -294,7 +320,9 @@ public final class NamespaceJobStore {
                 || target.nbtPath() == null
                 || target.nbtPath().length() > 16_384
                 || target.resourceId() == null
-                || !target.resourceId().matches("[a-z0-9_.-]+:[a-z0-9_./-]+")) {
+                || !target.resourceId().matches("[a-z0-9_.-]+:[a-z0-9_./-]+")
+                || target.store() == null
+                || target.amount() < 0) {
             throw new IOException("Invalid namespace target");
         }
     }

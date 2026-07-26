@@ -1,18 +1,30 @@
 # Data Safety
 
+`orphaned-items` uses the signed live item registry as its only orphan authority. It prepares and
+backs up all signed world roots before replacing the first file. Standard ItemStacks and the
+verified AE2, Refined Storage, and Mekanism QIO schemas are supported; arbitrary private SavedData
+is not inferred from resource-like strings. The primary-world QIO UUID index is held constant
+through scanning, apply, and verification of every loaded Multiverse world.
+
+Schema-5 requests additionally HMAC-bind the exact worlds whose region files are excluded and the
+parallel reader count. Exclusion never suppresses playerdata or supported SavedData. If any region
+root is excluded, QIO type-cache deletion is deferred so a drive inside an unscanned region cannot
+retain a dangling UUID.
+
 ## 在线阶段
 
-维护请求在线创建时只捕获当前注册表快照、请求参数和一次性确认信息。执行 `confirm` 后，Mod 强制保存世界、踢出玩家并停止服务器；任何世界写入都必须等服务器进程退出且 `session.lock` 可获取。
+维护请求在线创建时只捕获当前注册表快照、请求参数、一次性确认信息，以及 Youer/Bukkit 当前已加载的全部独立世界根。执行 `confirm` 后，Mod 强制保存世界、踢出玩家并停止服务器；worker 会在首次扫描前一次性获取所有已签名世界的 `session.lock`，并持有到整组作业验证或回滚完成。
 
-请求中的世界路径、作业根、父进程、操作、命名空间、注册表快照、版本和重启策略都绑定到 HMAC。worker 不接受临时替换的路径或未签名参数。
+请求中的完整世界路径集合、作业根、父进程、操作、命名空间、注册表快照、版本和重启策略都绑定到 HMAC。worker 不接受临时替换的路径或未签名参数。
 
 ## 离线写入
 
 - 每个区块写入前重新扫描，目标集合必须与扫描记录完全一致；
 - 每个受影响 `.mca`、`.mcc` 或玩家 `.dat` 都先建立完整备份并校验 SHA-256；
+- 多世界作业先扫描和备份所有世界，之后才允许替换第一个文件；
 - 使用同目录临时副本、语义复读和原子替换；
-- 修复后重新扫描并要求剩余目标为 0；
-- 任一步失败都会在安全前提满足时自动恢复已经替换的文件；
+- 完整范围在首次扫描后通过源哈希和逐 chunk 精确目标集复核；修复后只重扫受影响文件并要求剩余目标为 0；
+- 任一步失败都会在安全前提满足时逆序恢复已经替换的文件和世界；
 - 无法证明原子替换可靠时直接拒绝，不使用非原子降级。
 
 回滚只覆盖当前仍等于作业记录 post hash 的文件。如果修复后文件已被服务器再次保存，内置回滚拒绝抹掉新进度。

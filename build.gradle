@@ -18,6 +18,18 @@ java {
 sourceSets {
     worldTool
     worldToolTest
+    supervisor
+    supervisorTest {
+        compileClasspath += project.files(
+                sourceSets.supervisor.output,
+                sourceSets.supervisor.compileClasspath
+        )
+        runtimeClasspath += project.files(
+                output,
+                sourceSets.supervisor.output,
+                sourceSets.supervisor.runtimeClasspath
+        )
+    }
     maintenance {
         compileClasspath += project.files(
                 sourceSets.main.output,
@@ -87,6 +99,9 @@ dependencies {
     worldToolTestImplementation platform('org.junit:junit-bom:5.11.4')
     worldToolTestImplementation 'org.junit.jupiter:junit-jupiter'
     worldToolTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    supervisorTestImplementation platform('org.junit:junit-bom:5.11.4')
+    supervisorTestImplementation 'org.junit.jupiter:junit-jupiter'
+    supervisorTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -134,6 +149,16 @@ tasks.register('maintenanceTest', Test) {
     useJUnitPlatform()
     maxParallelForks = 1
     jvmArgs '-Xms64m', '-Xmx512m'
+}
+
+tasks.register('supervisorTest', Test) {
+    group = 'verification'
+    description = 'Runs standalone maintenance supervisor lifecycle tests.'
+    testClassesDirs = sourceSets.supervisorTest.output.classesDirs
+    classpath = sourceSets.supervisorTest.runtimeClasspath
+    useJUnitPlatform()
+    maxParallelForks = 1
+    jvmArgs '-Xms64m', '-Xmx256m'
 }
 
 processResources {
@@ -230,7 +255,7 @@ tasks.register('maintenanceWorkerJar', Jar) {
                 'Main-Class':
                         'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain',
                 'Implementation-Title': 'YuWorldRepair Post-Shutdown Worker',
-                'Implementation-Version': '2.1.0-rc1+mc1.21.1',
+                'Implementation-Version': '2.1.0-rc2+mc1.21.1',
                 'Data-Mutation': 'exact-authorized-unlocked-world-only'
         )
     }
@@ -240,7 +265,7 @@ tasks.register('maintenanceJar', Jar) {
     group = 'build'
     description = 'Builds the server Mod edition with post-shutdown repair and rollback worker.'
     archiveBaseName = 'YuWorldRepair'
-    archiveVersion = '2.1.0-rc1+mc1.21.1-neoforge'
+    archiveVersion = '2.1.0-rc2+mc1.21.1-neoforge'
     dependsOn tasks.named('maintenanceWorkerJar')
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from(sourceSets.main.output) {
@@ -248,6 +273,7 @@ tasks.register('maintenanceJar', Jar) {
         exclude 'build-info.properties'
     }
     from sourceSets.maintenance.output
+    from sourceSets.supervisor.output
     from(sourceSets.worldTool.output) {
         exclude 'dev/yu/worldrepair/worldtool/WorldToolMain*'
         exclude 'dev/yu/worldrepair/worldtool/maintenance/MaintenanceWorkerMain*'
@@ -259,8 +285,10 @@ tasks.register('maintenanceJar', Jar) {
     exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
     manifest {
         attributes(
+                'Main-Class':
+                        'dev.yu.worldrepair.supervisor.MaintenanceSupervisorMain',
                 'Implementation-Title': 'YuWorldRepair Server Maintenance Edition',
-                'Implementation-Version': '2.1.0-rc1+mc1.21.1-neoforge',
+                'Implementation-Version': '2.1.0-rc2+mc1.21.1-neoforge',
                 'Data-Mutation': 'post-shutdown-verified-adapters-only',
                 'Worker-Main-Class':
                         'dev.yu.worldrepair.worldtool.maintenance.MaintenanceWorkerMain'
@@ -272,11 +300,12 @@ tasks.register('maintenanceSourcesJar', Jar) {
     group = 'build'
     description = 'Builds sources for the server maintenance Mod edition.'
     archiveBaseName = 'YuWorldRepair'
-    archiveVersion = '2.1.0-rc1+mc1.21.1-neoforge'
+    archiveVersion = '2.1.0-rc2+mc1.21.1-neoforge'
     archiveClassifier = 'sources'
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     from sourceSets.main.allSource
     from sourceSets.maintenance.allSource
+    from sourceSets.supervisor.allSource
     from(sourceSets.worldTool.allSource) {
         exclude 'dev/yu/worldrepair/worldtool/WorldToolMain*'
     }
@@ -391,6 +420,7 @@ tasks.register('verifyMaintenanceBoundary') {
                     'dev/yu/worldrepair/YuWorldRepair.class',
                     'dev/yu/worldrepair/maintenance/MaintenanceBootstrap.class',
                     'dev/yu/worldrepair/maintenance/MaintenanceController.class',
+                    'dev/yu/worldrepair/supervisor/MaintenanceSupervisorMain.class',
                     'dev/yu/worldrepair/worldtool/WorldRepairService.class',
                     'META-INF/yuworldrepair/worker.jar',
                     'META-INF/neoforge.mods.toml',
@@ -425,6 +455,27 @@ tasks.register('verifyMaintenanceBoundary') {
                                 + workerRuntimeLeaks*.name
                 )
             }
+            def supervisorRuntimeLeaks = maintenance.entries().findAll { entry ->
+                entry.name.startsWith('dev/yu/worldrepair/supervisor/')
+                        && entry.name.endsWith('.class')
+                        && {
+                    def text = new String(
+                            maintenance.getInputStream(entry).bytes,
+                            java.nio.charset.StandardCharsets.ISO_8859_1
+                    )
+                    text.contains('com/google/gson/')
+                            || text.contains('dev/yu/worldrepair/worldtool/')
+                            || text.contains('dev/yu/worldrepair/maintenance/')
+                            || text.contains('net/minecraft/')
+                            || text.contains('net/neoforged/')
+                }()
+            }
+            if (!supervisorRuntimeLeaks.isEmpty()) {
+                throw new GradleException(
+                        "Executable supervisor links Mod/worker runtime classes: "
+                                + supervisorRuntimeLeaks*.name
+                )
+            }
             def embeddedBytes = maintenance.getInputStream(
                     maintenance.getJarEntry('META-INF/yuworldrepair/worker.jar')
             ).bytes
@@ -456,14 +507,16 @@ tasks.register('verifyMaintenanceBoundary') {
                 }
             }
             def manifest = maintenance.manifest.mainAttributes
-            if (manifest.getValue('Data-Mutation')
+            if (manifest.getValue('Main-Class')
+                    != 'dev.yu.worldrepair.supervisor.MaintenanceSupervisorMain'
+                    || manifest.getValue('Data-Mutation')
                     != 'post-shutdown-verified-adapters-only') {
                 throw new GradleException('Maintenance manifest mutation boundary is invalid')
             }
             def metadata = maintenance.getInputStream(
                     maintenance.getJarEntry('META-INF/neoforge.mods.toml')
             ).getText('UTF-8')
-            if (!metadata.contains('2.1.0-rc1+mc1.21.1-neoforge')) {
+            if (!metadata.contains('2.1.0-rc2+mc1.21.1-neoforge')) {
                 throw new GradleException('Maintenance Mod metadata version is invalid')
             }
         }
@@ -475,6 +528,7 @@ tasks.named('check') {
     dependsOn tasks.named('verifyWorldToolBoundary')
     dependsOn tasks.named('worldToolTest')
     dependsOn tasks.named('maintenanceTest')
+    dependsOn tasks.named('supervisorTest')
     dependsOn tasks.named('verifyMaintenanceBoundary')
 }
 

@@ -51,6 +51,7 @@ final class MaintenanceConfig {
             boolean enabled,
             int countdownSeconds,
             int startupWaitSeconds,
+            int scanWorkers,
             MaintenanceRequest.RestartStrategy restartStrategy,
             List<String> restartCommand
     ) {
@@ -63,6 +64,7 @@ final class MaintenanceConfig {
                     true,
                     10,
                     1_800,
+                    0,
                     MaintenanceRequest.RestartStrategy.PANEL,
                     List.of()
             );
@@ -73,9 +75,18 @@ final class MaintenanceConfig {
                     enabled,
                     countdownSeconds,
                     startupWaitSeconds,
+                    scanWorkers,
                     restartStrategy,
                     restartCommand
             );
+        }
+
+        int effectiveScanWorkers() {
+            if (scanWorkers > 0) {
+                return scanWorkers;
+            }
+            int processors = Runtime.getRuntime().availableProcessors();
+            return Math.max(1, Math.min(8, (processors + 1) / 2));
         }
 
         void validate() {
@@ -84,6 +95,9 @@ final class MaintenanceConfig {
             }
             if (startupWaitSeconds < 60 || startupWaitSeconds > 3_600) {
                 throw new IllegalArgumentException("startupWaitSeconds must be 60..3600");
+            }
+            if (scanWorkers < 0 || scanWorkers > 16) {
+                throw new IllegalArgumentException("scanWorkers must be 0(auto)..16");
             }
             if (restartStrategy == null) {
                 throw new IllegalArgumentException("restartStrategy is required");

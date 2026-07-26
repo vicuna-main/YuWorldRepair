@@ -6,13 +6,15 @@
 entity["neoforge:attachments"]["iceandfire:chicken_data"]
 ```
 
-服务器维护版用户应优先使用游戏内：
+此 CLI 只为旧作业兼容和隔离副本开发验证保留。服务器维护版不再暴露鸡附件专用
+指令；统一使用：
 
 ```text
-/yuworldrepair repair iceandfire-chicken-data
+/yuworldrepair repair orphaned-items
 ```
 
-独立 CLI 主要用于隔离副本预检和开发验证。
+统一指令根据签名的实时附件注册表递归识别孤儿附件，因此会处理物品组件、龙号角、
+女仆镜像等深层位置，也不限于 `iceandfire`。
 
 ## 副本要求
 
