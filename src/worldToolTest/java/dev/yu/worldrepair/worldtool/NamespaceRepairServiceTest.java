@@ -54,7 +54,7 @@ class NamespaceRepairServiceTest {
                 "entities",
                 3,
                 4,
-                2,
+                4,
                 List.of(removedEntity, survivor)
         );
         String original = IoUtil.sha256(region);

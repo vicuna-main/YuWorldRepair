@@ -89,6 +89,7 @@ neoForge {
 dependencies {
     compileOnly 'org.appliedenergistics:appliedenergistics2:19.2.17:api'
     worldToolImplementation 'com.google.code.gson:gson:2.10.1'
+    worldToolImplementation 'org.lz4:lz4-java:1.8.0'
     maintenanceImplementation sourceSets.worldTool.output
     maintenanceImplementation 'com.google.code.gson:gson:2.10.1'
     maintenanceTestImplementation platform('org.junit:junit-bom:5.11.4')
@@ -96,6 +97,7 @@ dependencies {
     maintenanceTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     worldToolTestImplementation sourceSets.worldTool.output
     worldToolTestImplementation 'com.google.code.gson:gson:2.10.1'
+    worldToolTestImplementation 'org.lz4:lz4-java:1.8.0'
     worldToolTestImplementation platform('org.junit:junit-bom:5.11.4')
     worldToolTestImplementation 'org.junit.jupiter:junit-jupiter'
     worldToolTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -490,7 +492,9 @@ tasks.register('verifyMaintenanceBoundary') {
                         'dev/yu/worldrepair/worldtool/maintenance/MaintenanceWorkerMain.class',
                         'dev/yu/worldrepair/worldtool/WorldRepairService.class',
                         'dev/yu/worldrepair/worldtool/namespace/NamespaceRepairService.class',
-                        'com/google/gson/Gson.class'
+                        'com/google/gson/Gson.class',
+                        'net/jpountz/lz4/LZ4BlockInputStream.class',
+                        'net/jpountz/lz4/LZ4BlockOutputStream.class'
                 ].each { required ->
                     if (worker.getJarEntry(required) == null) {
                         throw new GradleException("Embedded worker is missing ${required}")

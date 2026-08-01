@@ -540,15 +540,15 @@ public final class MaintenanceWorkerMain {
             );
             MaintenanceFiles.writeJobGroup(groupDirectory, group);
             if (!prepared.success()) {
-                MaintenanceRequest failed = request.withState(
-                        MaintenanceRequest.State.FAILED,
-                        "A loaded world has coverage gaps; no world files were replaced"
+                MaintenanceRequest completed = request.withState(
+                        MaintenanceRequest.State.COMPLETED,
+                        prepared.detail()
                 );
-                update(requestPath, failed);
+                update(requestPath, completed);
                 return MaintenanceResult.of(
-                        failed,
+                        completed,
                         false,
-                        failed.state(),
+                        completed.state(),
                         prepared.detail(),
                         groupDirectory.toString(),
                         false,

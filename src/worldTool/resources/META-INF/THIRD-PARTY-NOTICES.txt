@@ -5,3 +5,9 @@ Copyright 2008 Google Inc.
 https://github.com/google/gson
 Licensed under the Apache License, Version 2.0.
 The full license is included as META-INF/LICENSE-APACHE-2.0.txt.
+
+lz4-java 1.8.0
+Copyright 2020 Adrien Grand and the lz4-java contributors.
+https://github.com/lz4/lz4-java
+Licensed under the Apache License, Version 2.0.
+The full license is included as META-INF/LICENSE-APACHE-2.0.txt.

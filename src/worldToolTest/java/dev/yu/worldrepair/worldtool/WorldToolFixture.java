@@ -4,6 +4,7 @@ import dev.yu.worldrepair.worldtool.adapter.LegacyChickenDataAdapter;
 import dev.yu.worldrepair.worldtool.anvil.RegionFile;
 import dev.yu.worldrepair.worldtool.io.WorldAccessPolicy;
 import dev.yu.worldrepair.worldtool.nbt.Nbt;
+import net.jpountz.lz4.LZ4BlockOutputStream;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -266,6 +267,11 @@ final class WorldToolFixture {
                 }
             }
             case 3 -> output.write(raw);
+            case 4 -> {
+                try (OutputStream encoded = new LZ4BlockOutputStream(output)) {
+                    encoded.write(raw);
+                }
+            }
             default -> throw new IOException("Unsupported test compression");
         }
         return output.toByteArray();

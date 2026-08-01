@@ -213,6 +213,50 @@ class MaintenanceWorkerSecurityTest {
         );
     }
 
+    @Test
+    void namespaceCoverageGapCompletesWithoutBlockingStartup() throws Exception {
+        Path server = Files.createDirectory(temporary.resolve("coverage-gap-server"));
+        Path world = createWorld(server.resolve("world"));
+        Nbt.CompoundTag unsupported = new Nbt.CompoundTag();
+        unsupported.put("DataVersion", new Nbt.IntTag(9_999));
+        Path player = world.resolve("playerdata")
+                .resolve("30000000-0000-0000-0000-000000000003.dat");
+        Files.createDirectories(player.getParent());
+        try (OutputStream output = new GZIPOutputStream(Files.newOutputStream(player))) {
+            Nbt.writeRoot(new Nbt.Root("", unsupported), output);
+        }
+        String playerHash = IoUtil.sha256(player);
+        String secret = "abcdef0123456789abcdef0123456789";
+        Path requestPath = writeNamespaceRequest(
+                server,
+                world,
+                List.of(world),
+                null,
+                MaintenanceRequest.Operation.NAMESPACE_REPAIR,
+                secret,
+                "33333333-4444-5555-6666-777777777777"
+        );
+
+        int exit = MaintenanceWorkerMain.run(
+                new String[]{requestPath.toString()},
+                secret
+        );
+
+        assertEquals(3, exit);
+        assertEquals(playerHash, IoUtil.sha256(player));
+        MaintenanceResult result = MaintenanceFiles.readResult(
+                requestPath.resolveSibling(MaintenanceFiles.RESULT_FILE)
+        );
+        assertFalse(result.success());
+        assertEquals(MaintenanceRequest.State.COMPLETED, result.state());
+        assertFalse(result.rollbackAvailable());
+        assertEquals(1, ((Number) result.metrics().get("coverageGaps")).intValue());
+        MaintenanceHandoff handoff = MaintenanceFiles.readHandoff(
+                requestPath.resolveSibling(MaintenanceFiles.HANDOFF_FILE)
+        );
+        assertEquals(MaintenanceRequest.State.COMPLETED, handoff.state());
+    }
+
     private Path writeRequest(Path world, Path iceJar, String secret) throws Exception {
         return writeRequest(
                 world,

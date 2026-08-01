@@ -235,6 +235,31 @@ class StartupGateTest {
     }
 
     @Test
+    void completedReadOnlyFailureAllowsStartup() throws Exception {
+        Path requestPath = writeRequest(MaintenanceRequest.State.SCANNING, 999_999_999L);
+        MaintenanceRequest request = MaintenanceFiles.readStoredRequest(requestPath);
+        MaintenanceFiles.writeResult(
+                requestPath.resolveSibling(MaintenanceFiles.RESULT_FILE),
+                MaintenanceResult.of(
+                        request,
+                        false,
+                        MaintenanceRequest.State.COMPLETED,
+                        "coverage gaps found; no world files were replaced",
+                        null,
+                        false,
+                        Map.of("coverageGaps", 1),
+                        false
+                )
+        );
+
+        MaintenanceResult result = StartupGate.awaitSafeResult(temporary, 60).orElseThrow();
+
+        assertFalse(result.success());
+        assertEquals(MaintenanceRequest.State.COMPLETED, result.state());
+        assertFalse(result.rollbackAvailable());
+    }
+
+    @Test
     void verifiedRollbackResultAllowsStartup() throws Exception {
         Path requestPath = writeRequest(MaintenanceRequest.State.ROLLED_BACK, 999_999_999L);
         MaintenanceRequest request = MaintenanceFiles.readStoredRequest(requestPath);

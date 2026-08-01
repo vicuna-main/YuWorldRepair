@@ -117,7 +117,7 @@ class NbtAndRegionSafetyTest {
 
     @Test
     void allInternalCompressionTypesAreReadable() throws Exception {
-        for (int compression = 1; compression <= 3; compression++) {
+        for (int compression = 1; compression <= 4; compression++) {
             Path world = WorldToolFixture.createWorld(temporary.resolve("world-" + compression));
             Path region = WorldToolFixture.writeEntityRegion(
                     world,
@@ -288,7 +288,7 @@ class NbtAndRegionSafetyTest {
                 List.of()
         );
         byte[] bytes = Files.readAllBytes(invalid);
-        bytes[2 * RegionFile.SECTOR_BYTES + 4] = 4;
+        bytes[2 * RegionFile.SECTOR_BYTES + 4] = 5;
         Files.write(invalid, bytes);
         IOException failure = assertThrows(
                 IOException.class,

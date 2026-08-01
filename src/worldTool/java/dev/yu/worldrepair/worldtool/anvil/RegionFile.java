@@ -2,6 +2,8 @@ package dev.yu.worldrepair.worldtool.anvil;
 
 import dev.yu.worldrepair.worldtool.nbt.Nbt;
 import dev.yu.worldrepair.worldtool.io.WorldAccessPolicy;
+import net.jpountz.lz4.LZ4BlockInputStream;
+import net.jpountz.lz4.LZ4BlockOutputStream;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -366,6 +368,7 @@ public final class RegionFile {
             case 1 -> new GZIPInputStream(input, 8_192);
             case 2 -> new InflaterInputStream(input);
             case 3 -> input;
+            case 4 -> new LZ4BlockInputStream(input);
             default -> throw new IOException("Unsupported Anvil compression type " + compression);
         };
     }
@@ -384,6 +387,11 @@ public final class RegionFile {
                 }
             }
             case 3 -> output.write(raw);
+            case 4 -> {
+                try (OutputStream compressed = new LZ4BlockOutputStream(output)) {
+                    compressed.write(raw);
+                }
+            }
             default -> throw new IOException("Unsupported Anvil compression type " + compression);
         }
         return output.toByteArray();
@@ -431,7 +439,7 @@ public final class RegionFile {
     }
 
     private static void validateCompression(int compression) throws IOException {
-        if (compression < 1 || compression > 3) {
+        if (compression < 1 || compression > 4) {
             throw new IOException("Unsupported Anvil compression type " + compression);
         }
     }
